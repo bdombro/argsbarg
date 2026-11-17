@@ -226,6 +226,8 @@ export interface McpServerConfig {
   bundle?: McpBundleConfig;
   /** Overrides the default startup size warnings (see {@link McpSizeLimits}). */
   sizeLimits?: McpSizeLimits;
+  /** Opt-in: run MCP tool calls concurrently instead of one at a time. Default false. */
+  concurrent?: boolean;
   /** Opt into strict outputSchema validation and schema-conforming typed MCP results. Default false. */
   validateOutputs?: boolean;
 }

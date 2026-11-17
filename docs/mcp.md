@@ -117,6 +117,7 @@ Set `mcpServer` on the **app root only** (the object passed to `argsbarg({ … }
 | `mcpd`, `claudePlugin`, `cursorPlugin`, `bundle` | off | Packaging for `mcp bundle` (see [MCP Bundle](#mcp-bundle-mcp-bundle)) |
 | `sizeLimits` | see [Tool sizes](#tool-sizes) | Overrides the default startup size warnings for tool descriptions, definitions, and `instructions` |
 | `validateOutputs` | `false` | Validate declared output schemas and emit schema-conforming typed MCP results; see [Tool results](#tool-results) |
+| `concurrent` | `false` | Run tool calls concurrently instead of one at a time; see [Concurrent calls](#concurrent-calls) |
 
 The initialization result's `serverInfo` uses the sanitized program `key` and app `version` (also used by the `version` built-in).
 
@@ -131,11 +132,28 @@ mcpServer: {
 
 ## Workspace cwd
 
-After initialization, argsbarg requests `roots/list` once if the client advertised roots support. Exactly one usable local file URI selects cwd before invocation hooks and handlers run; child CLIs inherit it. Application calls remain serialized while the input reader handles the roots response independently.
+After initialization, argsbarg requests `roots/list` once if the client advertised roots support. Exactly one usable local file URI selects cwd before invocation hooks and handlers run; child CLIs inherit it. Application calls wait for this selection while the input reader handles the roots response independently.
 
 Unsupported, empty, multiple, malformed, remote, or inaccessible roots retain launch cwd. Errors, disconnects, and an unanswered request after five seconds also fall back. There is no roots refresh, public roots API, or settings change. A client that does not advertise roots receives no roots request.
 
-The selected cwd persists for the server session. `hooks.beforeInvoke` can override it, and children can receive an explicit `cwd`; application changes to process cwd also persist. Do not overlap `app.invoke()` calls while output capture and cwd are process-global.
+The selected cwd persists for the server session. `hooks.beforeInvoke` can override it, and children can receive an explicit `cwd`; application changes to process cwd also persist (except in [concurrent mode](#concurrent-calls), where `process.chdir` inside a command throws). Output capture is per invocation, so overlapping `app.invoke()` calls never mix their stdout or stderr.
+
+## Concurrent calls
+
+By default the server runs one tool call at a time. Set `mcpServer: { enabled: true, concurrent: true }` to let calls overlap, so a long call (say, waiting for a message) doesn't block the call that would unblock it:
+
+```typescript
+mcpServer: {
+  enabled: true,
+  concurrent: true,
+},
+```
+
+- Calls still wait for initialization and workspace selection; after that, responses may arrive out of order.
+- Each call captures its own output. App writes to stdout outside any call go to stderr, never the wire.
+- `process.chdir` throws inside a command, because every call shares the process cwd. Pass directories as arguments and give child processes an explicit `cwd`.
+- argsbarg has no per-command lock. If commands share mutable state, guard it yourself (a mutex or a database transaction).
+- Overlap is asynchronous only: synchronous JavaScript still blocks every other call.
 
 Roots are untrusted client input, not authorization or a filesystem sandbox. MCP has no standard workspace environment variable. Lack of roots support does not prevent a host from launching the process in the workspace or supplying an explicit path through its configuration. Startup configuration, module initialization, and already-open files still use launch cwd and are not rerun. CLI and REST behavior are unchanged.
 
@@ -326,7 +344,7 @@ Inheriting stdout (`stdio: "inherit"`) under MCP corrupts the wire. Prefer `"pip
 
 ### Cancellation and progress
 
-`ctx.mcp.signal` is a cooperative `AbortSignal` for MCP handlers and invocation hooks. Pass it to Node child-process APIs and other abortable work. Cancellation is handled immediately while tools remain serialized; cancelled queued calls never invoke their handler. Cancelled results are suppressed, and unknown/completed IDs are ignored. String and numeric IDs remain distinct. A signal cannot interrupt synchronous code or children that do not receive it.
+`ctx.mcp.signal` is a cooperative `AbortSignal` for MCP handlers and invocation hooks. Pass it to Node child-process APIs and other abortable work. Cancellation is handled immediately, whether calls run one at a time or concurrently; cancelled queued calls never invoke their handler. Cancelled results are suppressed, and unknown/completed IDs are ignored. String and numeric IDs remain distinct. A signal cannot interrupt synchronous code or children that do not receive it.
 
 ```typescript
 handler: async (ctx) => {
@@ -485,7 +503,8 @@ Every agent session starts one process per stdio MCP server, and each Node proce
 - **Bundles join unchanged.** The gateway imports each one; its `await app.run()` finds the gateway and registers its MCP handler instead of reading argv or stdio. Bundles must be built with an argsbarg version that has the gateway. A bundle that registers nothing fails at startup.
 - **Instructions** become one section per plugin (`## <alias>`) under a line explaining the tool prefix.
 - **Resources** keep their URIs and merge. One shared `mcp_resource_read` tool reads any plugin's resource; plugins' own copies of that tool are dropped.
-- **Shared process:** plugins share env (the login-shell env is bootstrapped once, before any bundle loads), the working directory (the gateway selects the client's workspace root once), and the serialized request queue. Each keeps its own hooks, logging and `errorReporter`.
+- **Shared process:** plugins share env (the login-shell env is bootstrapped once, before any bundle loads), the working directory (the gateway selects the client's workspace root once), and the request queue. Each keeps its own hooks, logging and `errorReporter`.
+- **Concurrent calls:** `argsbarg gateway --concurrent …` runs calls concurrently across every plugin (each plugin's own `mcpServer.concurrent` is ignored inside a gateway). Every bundle must be built with an argsbarg that supports it; older bundles fail at startup with a rebuild message.
 - **Libraries** can call `mcpGatewayServe(entries, { name, version })`.
 
 ## Hidden commands and options

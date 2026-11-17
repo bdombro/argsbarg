@@ -14,10 +14,48 @@ const execFileAsync = promisify(execFile);
 let hookCwd = process.cwd();
 /** Active workspace handlers, used to detect accidental concurrent dispatch. */
 let activeWorkspaceCalls = 0;
+/** Resolves the pending `wait-release` call; set while one is waiting. */
+let release: (() => void) | undefined;
 
 /** Includes regular commands plus deliberately invalid output for protocol checks. */
 const program = {
   commands: [
+    {
+      description: "Wait until the release tool runs (concurrency handshake).",
+      /** Prints, then blocks until `release` is called, proving another call ran meanwhile. */
+      handler: async () => {
+        console.log("waiting");
+        await new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        return "released";
+      },
+      key: "wait-release",
+    },
+    {
+      description: "Release the waiting call.",
+      /** Unblocks `wait-release`; reports whether one was waiting. */
+      handler: () => {
+        const waiting = release !== undefined;
+        release?.();
+        release = undefined;
+        return { waiting };
+      },
+      key: "release",
+    },
+    {
+      description: "Try to change the working directory.",
+      /** Calls process.chdir to its own cwd and reports what happened. */
+      handler: () => {
+        try {
+          process.chdir(process.cwd());
+          return "changed";
+        } catch (err) {
+          return (err as Error).message;
+        }
+      },
+      key: "try-chdir",
+    },
     {
       description: "Run a child until the request is cancelled.",
       /** Reports the child PID before awaiting cooperative cancellation. */
@@ -127,6 +165,7 @@ const program = {
       },
     ],
     validateOutputs: true,
+    ...(process.env.MCP_TEST_CONCURRENT ? { concurrent: true } : {}),
   },
   version: "0.0.0-test",
 } satisfies AppSpec;

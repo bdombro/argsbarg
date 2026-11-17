@@ -11,6 +11,7 @@ shared between argsbarg copies, because every bundle carries its own copy of arg
 
 import { isAbsolute, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { INVOCATION_SCOPE_VERSION } from "../runtime/invocation-scope.ts";
 import { bootstrapMcpEnv } from "./env.ts";
 import { MCP_PROTOCOL_VERSIONS, type McpRequestControls, type McpRequestHandler, mcpServeStdio } from "./server.ts";
 import { MCP_RESOURCE_READ_HINT, MCP_RESOURCE_READ_TOOL } from "./tools.ts";
@@ -26,6 +27,8 @@ export interface McpGatewayApp {
   version: string;
   /** The app's MCP instructions, without the resource-read hint. */
   instructions?: string;
+  /** Invocation-scope contract version; absent in bundles built before concurrent calls existed. */
+  invocationScopeVersion?: number;
   /** Handles one JSON-RPC request with the app's own MCP server logic. */
   handle(
     /** Request with an id. */
@@ -39,6 +42,8 @@ export interface McpGatewayApp {
 
 /** Registry the gateway puts on globalThis while one bundle is imported. */
 export interface McpGatewayRegistry {
+  /** True when the gateway runs application calls concurrently. */
+  concurrent?: boolean;
   /** Called by the bundle's `app.run()` instead of serving stdio. */
   register(app: McpGatewayApp): void;
 }
@@ -83,12 +88,15 @@ export function parseGatewayEntries(
 export async function loadGatewayApps(
   /** Bundles to mount. */
   entries: McpGatewayEntry[],
+  /** When true, every bundle must support concurrent calls. */
+  concurrent = false,
 ): Promise<MountedApp[]> {
   const mounted: MountedApp[] = [];
   const globals = globalThis as Record<symbol, unknown>;
   for (const entry of entries) {
     let registered: McpGatewayApp | undefined;
     const registry: McpGatewayRegistry = {
+      concurrent,
       register(app) {
         registered = app;
       },
@@ -103,6 +111,11 @@ export async function loadGatewayApps(
     const app = registered as McpGatewayApp | undefined;
     if (!app) {
       throw new Error(`${entry.path} did not register an MCP app (it needs a newer argsbarg and mcpServer enabled)`);
+    }
+    if (concurrent && app.invocationScopeVersion !== INVOCATION_SCOPE_VERSION) {
+      throw new Error(
+        `${entry.path} was built with an argsbarg that can't run calls concurrently; rebuild it with the current argsbarg or drop --concurrent`,
+      );
     }
     const alias = entry.alias ?? app.key;
     if (!ALIAS_PATTERN.test(alias)) throw new Error(`Invalid alias "${alias}" (letters, digits and dashes)`);
@@ -304,10 +317,16 @@ export async function mcpGatewayServe(
   entries: McpGatewayEntry[],
   /** Server name and version reported to clients. */
   info: { name: string; version: string },
+  /** Gateway options. */
+  opts: {
+    /** Run application calls concurrently; every bundle must support it. */
+    concurrent?: boolean;
+  } = {},
 ): Promise<void> {
   bootstrapMcpEnv({});
-  const mounted = await loadGatewayApps(entries);
+  const concurrent = opts.concurrent === true;
+  const mounted = await loadGatewayApps(entries, concurrent);
   const handler = createGatewayHandler(mounted, info);
   process.stderr.write(`[argsbarg] gateway ready: ${mounted.map((m) => `${m.alias} ${m.app.version}`).join(", ")}\n`);
-  await mcpServeStdio(handler, (message) => process.stderr.write(`[argsbarg] ${message}\n`));
+  await mcpServeStdio(handler, (message) => process.stderr.write(`[argsbarg] ${message}\n`), concurrent);
 }

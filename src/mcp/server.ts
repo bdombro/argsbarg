@@ -1,7 +1,8 @@
 /*
 This module serves session-based MCP tools and resources over stdio.
-Initialization negotiates capabilities; application calls remain serialized.
-Responses are newline-delimited JSON on stdout only, independent of tool output capture.
+Initialization negotiates capabilities; application calls are serialized unless the app opts into
+concurrent calls. Responses are newline-delimited JSON on stdout only, written through the raw
+writer so per-invocation output capture never touches the wire.
 */
 
 import { randomUUID } from "node:crypto";
@@ -9,6 +10,7 @@ import { fileURLToPath } from "node:url";
 import type { AppSpec, McpWireContext } from "../core/types.ts";
 import { executeHeadlessToolCall, headlessFailureMcpMessage, lookupHeadlessTool } from "../headless/tool-call.ts";
 import type { App } from "../runtime/cli.ts";
+import { invocationScopeState } from "../runtime/invocation-scope.ts";
 import {
   allMcpResources,
   collectMcpTools,
@@ -333,6 +335,7 @@ export async function mcpServeStdioLoop(cli: App): Promise<void> {
   await mcpServeStdio(
     (req, writeResponse, controls) => handleRequestLine(cli, req, writeResponse, controls),
     (message, action) => cli.server?.emitter.emitLifecycle(message, action),
+    cli.server?.mcpConcurrent === true,
   );
 }
 
@@ -342,11 +345,17 @@ export async function mcpServeStdio(
   handle: McpRequestHandler,
   /** Lifecycle log line writer (workspace selection). */
   emitLifecycle: (message: string, action: string) => void,
+  /** When true, application requests overlap instead of waiting for the previous one. */
+  concurrent = false,
 ): Promise<void> {
   let buffer = "";
   const decoder = new TextDecoder();
-  const writeStdout = process.stdout.write.bind(process.stdout);
+  const scopeState = invocationScopeState();
+  // stdout is the wire: app writes outside an invocation go to stderr instead of corrupting it.
+  scopeState.stdoutOutsideToStderr = true;
+  const writeStdout = scopeState.rawStdoutWrite;
   let execution = Promise.resolve();
+  const inFlight = new Set<Promise<void>>();
   const pending = new Map<string | number, AbortController>();
   const rootsRequestId = `argsbarg:roots:${randomUUID()}`;
   let rootsSupported: boolean | undefined;
@@ -479,7 +488,8 @@ export async function mcpServeStdio(
     }
     const controller = new AbortController();
     pending.set(id, controller);
-    execution = execution.then(async () => {
+    /** Runs this request once earlier lifecycle work (and, when serialized, earlier calls) is done. */
+    const run = async () => {
       if (controller.signal.aborted) {
         pending.delete(id);
         return;
@@ -532,7 +542,15 @@ export async function mcpServeStdio(
         completed = true;
         pending.delete(id);
       }
-    });
+    };
+    if (concurrent && request.method !== "initialize") {
+      // Wait for initialization and workspace selection, but not for other calls.
+      const task = execution.then(run);
+      inFlight.add(task);
+      void task.catch(stopInput).finally(() => inFlight.delete(task));
+      return;
+    }
+    execution = execution.then(run);
     void execution.catch(stopInput);
   }
 
@@ -554,6 +572,7 @@ export async function mcpServeStdio(
     settleRoots?.(new Error("MCP input disconnected"));
     try {
       await execution;
+      await Promise.allSettled([...inFlight]);
     } finally {
       process.stdout.off("error", stopInput);
     }

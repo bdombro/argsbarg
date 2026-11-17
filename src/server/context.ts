@@ -16,6 +16,8 @@ export interface ServerHandleContext {
   mcpHooks?: McpWireHooks;
   /** Negotiated revision, or the newest supported version before initialization. */
   mcpProtocolVersion?: string;
+  /** True when MCP application calls run concurrently (`mcpServer.concurrent` or gateway `--concurrent`). */
+  mcpConcurrent?: boolean;
 }
 
 /** Creates a fresh {@link ServerRuntime} for HTTP or MCP. */

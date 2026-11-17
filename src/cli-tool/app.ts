@@ -15,6 +15,11 @@ export const app = argsbarg({
         "Serve several argsbarg MCP plugin bundles from one process over stdio (MCP). Tools are named <alias>_<tool>.",
       options: [
         {
+          name: "concurrent",
+          description: "Run tool calls concurrently; every bundle must be built with an argsbarg that supports it.",
+          kind: OptionKind.Presence,
+        },
+        {
           name: "name",
           description: "Server name reported to MCP clients (default: argsbarg-gateway).",
           kind: OptionKind.String,
@@ -30,10 +35,11 @@ export const app = argsbarg({
         },
       ],
       handler: async (ctx) => {
-        await mcpGatewayServe(parseGatewayEntries(ctx.positional("bundles") as string[]), {
-          name: ctx.inputs.name ?? "argsbarg-gateway",
-          version: argsbargPackageVersion(),
-        });
+        await mcpGatewayServe(
+          parseGatewayEntries(ctx.positional("bundles") as string[]),
+          { name: ctx.inputs.name ?? "argsbarg-gateway", version: argsbargPackageVersion() },
+          { concurrent: ctx.inputs.concurrent },
+        );
         process.exit(0);
       },
     }),

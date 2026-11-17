@@ -3,7 +3,6 @@ Runtime entry point: validate program, cache derived state, run / invoke / MCP s
 */
 
 import { randomUUID } from "node:crypto";
-import { format } from "node:util";
 import type { z } from "zod";
 import { builtinInterceptRoot, dispatchBuiltin } from "../builtins/dispatch.ts";
 import { cliParseRoot, cliPresentationRoot } from "../builtins/presentation.ts";
@@ -45,6 +44,7 @@ import {
   runErrorPipeline,
   runHook,
 } from "./hooks.ts";
+import { INVOCATION_SCOPE_VERSION, type InvocationScope, runInInvocationScope } from "./invocation-scope.ts";
 
 /** Outcome of a non-exiting CLI invocation. */
 export type InvokeKind = "ok" | "help" | "error";
@@ -135,7 +135,7 @@ export class App {
     const gateway = mcpGatewayRegistry();
     if (gateway) {
       // Imported by `argsbarg gateway`: hand over the MCP handler instead of parsing argv.
-      gateway.register(this.gatewayApp());
+      gateway.register(this.gatewayApp(gateway.concurrent === true));
       return undefined as never;
     }
     assertBuiltinAllowed(argv, this.caps, this.spec);
@@ -288,48 +288,45 @@ export class App {
         mcp: opts?.mcp,
       });
 
-    let stdout = "";
-    let stderr = "";
-    const origExit = process.exit;
-    const origStdoutWrite = process.stdout.write.bind(process.stdout);
-    const origStderrWrite = process.stderr.write.bind(process.stderr);
-    const origConsoleLog = console.log;
-    const origConsoleError = console.error;
-    const origConsoleInfo = console.info;
-    const origConsoleWarn = console.warn;
-
-    process.exit = ((code?: number) => {
-      throw new CliInvokeExit(code ?? 0);
-    }) as typeof process.exit;
-
-    process.stdout.write = ((chunk: string | Uint8Array, ...args: unknown[]) => {
-      stdout += typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk);
-      if (typeof args[0] === "function") {
-        (args[0] as () => void)();
-      }
-      return true;
-    }) as typeof process.stdout.write;
-
-    process.stderr.write = ((chunk: string | Uint8Array, ...args: unknown[]) => {
-      stderr += typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk);
-      if (typeof args[0] === "function") {
-        (args[0] as () => void)();
-      }
-      return true;
-    }) as typeof process.stderr.write;
-
-    console.log = (...args: unknown[]) => {
-      stdout += `${format(...args)}\n`;
+    const scope: InvocationScope = {
+      stdout: "",
+      stderr: "",
+      exit: (code) => {
+        throw new CliInvokeExit(code);
+      },
+      forbidChdir: invocation === "mcp" && this.server?.mcpConcurrent === true,
+      closed: false,
     };
-    console.info = (...args: unknown[]) => {
-      stdout += `${format(...args)}\n`;
-    };
-    console.warn = (...args: unknown[]) => {
-      stderr += `${format(...args)}\n`;
-    };
-    console.error = (...args: unknown[]) => {
-      stderr += `${format(...args)}\n`;
-    };
+    return runInInvocationScope(scope, () =>
+      this.invokeInScope(scope, { pr, completionParseRoot, isLeafCompletionIntercept, leaf }, ctx, {
+        skipHooks,
+        hooks,
+        obscureUnexpected,
+        emitter,
+        hookCtx,
+      }),
+    );
+  }
+
+  /** Runs the routed handler with hooks inside an already-active invocation scope. */
+  private async invokeInScope(
+    /** Captures this invocation's output. */
+    scope: InvocationScope,
+    /** Parsed route. */
+    prep: Omit<PreparedDispatch, "parseRoot">,
+    /** Handler context. */
+    ctx: CommandContext,
+    /** Hook and error settings resolved by {@link invoke}. */
+    run: {
+      skipHooks: boolean;
+      hooks: AppSpec["hooks"];
+      obscureUnexpected: boolean;
+      emitter: ServerHandleContext["emitter"] | undefined;
+      hookCtx: () => ReturnType<typeof buildInvokeHookContext>;
+    },
+  ): Promise<InvokeResult> {
+    const { pr, completionParseRoot, isLeafCompletionIntercept, leaf } = prep;
+    const { skipHooks, hooks, obscureUnexpected, emitter, hookCtx } = run;
 
     const finishError = async (
       err: unknown,
@@ -349,7 +346,7 @@ export class App {
         return {
           kind: "error",
           exitCode: piped.clientError.exitCode ?? 1,
-          stdout,
+          stdout: scope.stdout,
           stderr: `${piped.errorMsg}\n`,
           errorMsg: piped.errorMsg,
           failureKind: piped.failureKind,
@@ -359,7 +356,7 @@ export class App {
       return {
         kind: "error",
         exitCode: 1,
-        stdout,
+        stdout: scope.stdout,
         stderr: `${message}\n`,
         errorMsg: message,
         failureKind,
@@ -378,7 +375,7 @@ export class App {
         await runHook(() => hooks?.beforeInvoke?.(hookCtx()), "beforeInvoke");
       }
 
-      opts?.mcp?.signal?.throwIfAborted();
+      ctx.mcp?.signal?.throwIfAborted();
       this.ensureValidatedLeafInputs(ctx, leaf);
       const handlerResult = await Promise.resolve(leaf.handler(ctx));
       if (handlerResult !== undefined && ctx.getResponse() === undefined) {
@@ -389,8 +386,8 @@ export class App {
       const okResult: InvokeResult = {
         kind: "ok",
         exitCode: 0,
-        stdout,
-        stderr,
+        stdout: scope.stdout,
+        stderr: scope.stderr,
         ...(response ? { response } : {}),
       };
 
@@ -406,8 +403,8 @@ export class App {
           const okResult: InvokeResult = {
             kind: "ok",
             exitCode: 0,
-            stdout,
-            stderr,
+            stdout: scope.stdout,
+            stderr: scope.stderr,
             ...(response ? { response } : {}),
           };
           if (!skipHooks) {
@@ -420,23 +417,15 @@ export class App {
       if (err instanceof InputError) {
         return finishError(err, { parseError: true });
       }
-      if (err instanceof Error) {
-        return finishError(err, {});
-      }
       return finishError(err, {});
-    } finally {
-      process.exit = origExit;
-      process.stdout.write = origStdoutWrite;
-      process.stderr.write = origStderrWrite;
-      console.log = origConsoleLog;
-      console.error = origConsoleError;
-      console.info = origConsoleInfo;
-      console.warn = origConsoleWarn;
     }
   }
 
   /** Sets up the MCP server state without stdio and returns the handler the gateway routes to. */
-  private gatewayApp(): McpGatewayApp {
+  private gatewayApp(
+    /** True when the gateway runs calls concurrently. */
+    concurrent: boolean,
+  ): McpGatewayApp {
     const mcpServer = this.spec.mcpServer;
     if (!mcpServer) throw new Error(`${this.spec.key}: mcpServer is not enabled, so it can't join a gateway`);
     const resolved = resolveMcpServeConfig(this.spec, {});
@@ -446,10 +435,12 @@ export class App {
       mcp: resolved,
       mcpHooks: mcpServer.hooks,
       mcpProtocolVersion: MCP_PROTOCOL_VERSIONS[0],
+      mcpConcurrent: concurrent,
     };
     return {
       key: this.spec.key,
       version: this.spec.version,
+      invocationScopeVersion: INVOCATION_SCOPE_VERSION,
       ...(mcpServer.instructions ? { instructions: mcpServer.instructions } : {}),
       handle: (req, writeResponse, controls) => handleRequestLine(this, req, writeResponse, controls),
     };
@@ -469,6 +460,7 @@ export class App {
         mcp: resolved,
         mcpHooks: this.spec.mcpServer?.hooks,
         mcpProtocolVersion: MCP_PROTOCOL_VERSIONS[0],
+        mcpConcurrent: this.spec.mcpServer?.concurrent === true,
       };
       const shutdown = () => {
         emitter.emit({ level: "info", message: "server stopping", action: "server.stop" });

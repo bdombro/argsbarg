@@ -140,4 +140,22 @@ describe("gateway", async () => {
     writeFileSync(file, "export const x = 1;\n");
     await assert.rejects(loadGatewayApps([{ path: file }]), /did not register an MCP app/);
   });
+
+  test("--concurrent rejects bundles built before concurrent calls", async () => {
+    /** Writes a bundle that registers like an argsbarg build without the invocation-scope contract. */
+    const oldBundle = (name: string) => {
+      const file = join(dir, `${name}.mjs`);
+      writeFileSync(
+        file,
+        `globalThis[Symbol.for("argsbarg.mcp.gateway")].register({ key: "old", version: "1.0.0", handle: async () => {} });\n`,
+      );
+      return file;
+    };
+    await assert.rejects(loadGatewayApps([{ path: oldBundle("old-a") }], true), /can't run calls concurrently/);
+    assert.equal((await loadGatewayApps([{ path: oldBundle("old-b") }]))[0]?.alias, "old");
+    assert.equal(
+      (await loadGatewayApps([{ path: writeBundle(dir, "fresh") }], true))[0]?.app.invocationScopeVersion,
+      1,
+    );
+  });
 });

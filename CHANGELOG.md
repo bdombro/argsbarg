@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- **New:** opt-in concurrent MCP calls. Set `mcpServer: { enabled: true, concurrent: true }` and a long tool call no longer blocks the call that would unblock it. Calls still wait for initialization and workspace selection. In this mode `process.chdir` inside a command throws, since every call shares the process cwd. The default stays one call at a time. See [Concurrent calls](docs/mcp.md#concurrent-calls).
+- **New:** `argsbarg gateway --concurrent` runs calls concurrently across plugins. Bundles built with an older argsbarg are rejected at startup with a rebuild message.
+- **Fix:** overlapping `app.invoke()` calls and concurrent HTTP requests no longer mix their captured stdout/stderr. Capture is now per invocation (AsyncLocalStorage), installed once and shared by every argsbarg copy in the process.
+- **Fix:** in MCP mode, app writes to stdout outside a tool call (module-level `console.log`, stray timers) go to stderr instead of corrupting the JSON-RPC wire.
+
 ## [8.3.1] - 2026-11-10
 
 - **Fix:** Add npm repository metadata and update the README GitHub link to the renamed `bdombro/argsbarg` repository.

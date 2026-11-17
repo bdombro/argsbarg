@@ -72,6 +72,28 @@ test("app command named after a disabled built-in runs with hooks", async () => 
   assert.deepEqual(seen, ["hook", "handler"]);
 });
 
+/** Overlapping invocations each capture only their own output. */
+test("overlapping App.invoke calls keep their output separate", async () => {
+  const root = testProgram({
+    key: "app",
+    description: "",
+    options: [{ name: "label", description: "Label to print.", kind: OptionKind.String, required: true }],
+    handler: async (ctx: CommandContext) => {
+      const label = ctx.stringOpt("label");
+      console.log(`${label} start`);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      process.stdout.write(`${label} end\n`);
+      console.error(`${label} err`);
+    },
+  });
+  const app = argsbarg(root);
+  const [a, b] = await Promise.all([app.invoke(["--label", "a"]), app.invoke(["--label", "b"])]);
+  assert.equal(a.stdout, "a start\na end\n");
+  assert.equal(b.stdout, "b start\nb end\n");
+  assert.equal(a.stderr, "a err\n");
+  assert.equal(b.stderr, "b err\n");
+});
+
 /** Tests that ctx.invocation is mcp via App.invoke. */
 test("ctx.invocation is mcp via App.invoke", async () => {
   let seen = "";

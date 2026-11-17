@@ -33,13 +33,15 @@ function workspaceClient(
   context: TestContext,
   /** Whether the application hook should override workspace cwd with launch cwd. */
   override = false,
+  /** Whether the fixture opts into concurrent MCP calls. */
+  concurrent = false,
 ) {
   const launch = realpathSync(mkdtempSync(join(tmpdir(), "argsbarg-mcp-")));
   const workspace = join(launch, "workspace with spaces");
   mkdirSync(workspace);
   const child = spawn(process.execPath, [join(import.meta.dirname, "..", "mcp-integration-fixture.ts"), "mcp"], {
     cwd: launch,
-    env: { ...process.env, MCP_TEST_CWD: override ? launch : "" },
+    env: { ...process.env, MCP_TEST_CONCURRENT: concurrent ? "1" : "", MCP_TEST_CWD: override ? launch : "" },
     stdio: ["pipe", "pipe", "pipe"],
   });
   let stderr = "";
@@ -100,6 +102,37 @@ test("MCP cancels active children and queued calls without overlapping tools", {
   assert.equal(response.id, "after");
   assert.equal((response.result as { structuredContent: { overlap: boolean } }).structuredContent.overlap, false);
   assert.throws(() => process.kill(pid, 0), { code: "ESRCH" });
+  client.child.stdin.end();
+  assert.equal(await client.closed, 0, client.stderr());
+});
+
+test("MCP concurrent mode lets a later call release a waiting one", { timeout: 4_000 }, async (context) => {
+  const client = workspaceClient(context, false, true);
+  client.write({ id: "wait", jsonrpc: "2.0", method: "tools/call", params: { name: "wait_release" } });
+  client.write({ id: "chdir", jsonrpc: "2.0", method: "tools/call", params: { name: "try_chdir" } });
+  client.write({ id: "release", jsonrpc: "2.0", method: "tools/call", params: { name: "release" } });
+  const byId = new Map<unknown, Record<string, unknown>>();
+  for (let i = 0; i < 3; i++) {
+    const message = await client.read();
+    byId.set(message.id, message);
+  }
+  const result = (id: string) => byId.get(id)?.result as { structuredContent: { content?: string } };
+  assert.deepEqual(result("release").structuredContent, { waiting: true });
+  assert.equal(result("wait").structuredContent.content, "released");
+  assert.match(String(result("chdir").structuredContent.content), /process\.chdir isn't allowed/);
+  client.child.stdin.end();
+  assert.equal(await client.closed, 0, client.stderr());
+});
+
+test("MCP default mode keeps calls serialized and chdir allowed", { timeout: 4_000 }, async (context) => {
+  const client = workspaceClient(context);
+  client.write({ id: "chdir", jsonrpc: "2.0", method: "tools/call", params: { name: "try_chdir" } });
+  client.write({ id: "release", jsonrpc: "2.0", method: "tools/call", params: { name: "release" } });
+  const chdir = await client.read();
+  assert.equal(chdir.id, "chdir");
+  assert.equal((chdir.result as { structuredContent: { content: string } }).structuredContent.content, "changed");
+  const released = await client.read();
+  assert.deepEqual((released.result as { structuredContent: unknown }).structuredContent, { waiting: false });
   client.child.stdin.end();
   assert.equal(await client.closed, 0, client.stderr());
 });
