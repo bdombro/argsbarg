@@ -9,6 +9,7 @@ import { hasHandler, hasSubcommands } from "../core/types.ts";
 import type { HttpRouteRegistration } from "../http/routes.ts";
 import type { JsonRpcMethodMetadata } from "../json-rpc/declaration.ts";
 import { createMcpRegistry, type McpToolRegistration } from "../mcp/registry.ts";
+import type { McpTaskProvider } from "../mcp/tasks.ts";
 
 /** Marks a cloned child app root whose grouped-root options are valid in its mounted CLI position. */
 export const CHILD_COMMAND_ROOT = Symbol("argsbarg.child-command-root");
@@ -105,6 +106,22 @@ export interface ChildMcpSnapshot {
   readonly source: ChildSourceScope;
 }
 
+/** One child-owned MCP Tasks provider exposed through a stable mount namespace. */
+export interface ChildMcpTaskSnapshot {
+  /** Child provider callbacks retained at mount time. */
+  readonly provider: McpTaskProvider<Locals>;
+  /** Full composed mount path used to namespace public task IDs. */
+  readonly path: readonly string[];
+  /** Child-owned invocation hooks copied at mount time. */
+  readonly hooks?: AppHooks;
+  /** Child-owned error reporter retained for provider operations. */
+  readonly errorReporter?: AppSpec["errorReporter"];
+  /** Child MCP guard, not the parent MCP guard. */
+  readonly guard?: NonNullable<AppSpec["mcp"]>["guard"];
+  /** Child credential boundary. */
+  readonly source: ChildSourceScope;
+}
+
 /** One public identity claim used to detect deterministic startup collisions. */
 export interface ChildCollisionFact {
   /** Collision category that shares comparison semantics. */
@@ -131,6 +148,8 @@ export interface ChildSnapshot {
   readonly jsonRpc: readonly ChildJsonRpcSnapshot[];
   /** Namespaced MCP declarations retained in stable traversal order. */
   readonly mcp: readonly ChildMcpSnapshot[];
+  /** Namespaced MCP Tasks providers retained in stable traversal order. */
+  readonly mcpTasks: readonly ChildMcpTaskSnapshot[];
   /** Surfaces represented by this snapshot, including configured empty surfaces. */
   readonly surfaces: readonly ChildSurface[];
   /** All public identity claims, including hidden operations. */
@@ -307,6 +326,8 @@ interface MutableChildSnapshot {
   jsonRpc: ChildJsonRpcSnapshot[];
   /** MCP records accumulated during recursive traversal. */
   mcp: ChildMcpSnapshot[];
+  /** MCP Tasks provider records accumulated during recursive traversal. */
+  mcpTasks: ChildMcpTaskSnapshot[];
   /** Configured native surfaces even when they contain no declarations. */
   surfaces: ChildSurface[];
 }
@@ -376,6 +397,18 @@ function snapshotApp(
       }),
     );
   }
+  if (spec.mcp?.tasks !== undefined) {
+    combined.mcpTasks.push(
+      Object.freeze({
+        provider: spec.mcp.tasks,
+        path: Object.freeze([...path]),
+        ...(hooks === undefined ? {} : { hooks }),
+        ...(spec.errorReporter === undefined ? {} : { errorReporter: spec.errorReporter }),
+        ...(spec.mcp.guard === undefined ? {} : { guard: spec.mcp.guard }),
+        source: scope,
+      }),
+    );
+  }
   for (const [key, mountValue] of Object.entries(children)) {
     assertMountKey(key);
     const mount = assertMount(mountValue, key);
@@ -387,7 +420,7 @@ function snapshotApp(
 
 /** Creates a mutable, collision-free-until-validated child snapshot accumulator. */
 function mutableSnapshot(): MutableChildSnapshot {
-  return { cli: [], http: [], jsonRpc: [], mcp: [], surfaces: [] };
+  return { cli: [], http: [], jsonRpc: [], mcp: [], mcpTasks: [], surfaces: [] };
 }
 
 /** Freezes every output array and derives configured surfaces and collision facts. */
@@ -399,6 +432,7 @@ function freezeSnapshot(
     http: Object.freeze([...mutable.http]),
     jsonRpc: Object.freeze([...mutable.jsonRpc]),
     mcp: Object.freeze([...mutable.mcp]),
+    mcpTasks: Object.freeze([...mutable.mcpTasks]),
   };
   const surfaces = SURFACES.filter((surface) => mutable.surfaces.includes(surface));
   const snapshot: ChildSnapshot = Object.freeze({
@@ -415,6 +449,7 @@ function appendSnapshot(target: MutableChildSnapshot, source: ChildSnapshot): vo
   target.http.push(...source.http);
   target.jsonRpc.push(...source.jsonRpc);
   target.mcp.push(...source.mcp);
+  target.mcpTasks.push(...source.mcpTasks);
   for (const surface of source.surfaces) {
     if (!target.surfaces.includes(surface)) target.surfaces.push(surface);
   }
@@ -427,6 +462,7 @@ function selectSnapshot(snapshot: ChildSnapshot, exposed: ReadonlySet<ChildSurfa
     http: exposed.has("http") ? [...snapshot.http] : [],
     jsonRpc: exposed.has("jsonRpc") ? [...snapshot.jsonRpc] : [],
     mcp: exposed.has("mcp") ? [...snapshot.mcp] : [],
+    mcpTasks: exposed.has("mcp") ? [...snapshot.mcpTasks] : [],
     surfaces: SURFACES.filter((surface) => exposed.has(surface) && snapshot.surfaces.includes(surface)),
   });
 }

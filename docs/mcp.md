@@ -87,6 +87,57 @@ Tool declarations return ordinary values or errors through `AppError`. Discovery
 
 Concurrent calls overlap by default in the shared dispatcher. Caller, locals, captured output, progress, and cancellation stay request-local. `process.chdir` is forbidden during overlapping MCP work.
 
+## Tasks
+
+Configure `mcp.tasks` to support the MCP `2026-07-28` Tasks extension without giving
+Argsbarg a queue, worker, store, or scheduler:
+
+```typescript
+const mcp = {
+  tools: [exportReport],
+  tasks: {
+    get: ({ taskId, locals, signal }) =>
+      jobs.get(taskId, locals.caller, signal),
+    update: ({ taskId, inputResponses, locals, signal }) =>
+      jobs.update(taskId, inputResponses, locals.caller, signal),
+    cancel: ({ taskId, locals, signal }) =>
+      jobs.cancel(taskId, locals.caller, signal),
+  },
+};
+```
+
+An MCP tool handler receives `ctx.mcp.tasks`:
+
+```typescript
+handler: async ({ inputs, locals, signal, mcp }) => {
+  if (!mcp.tasks.available) return exportInline(inputs, locals.caller, signal);
+  const task = await jobs.enqueue(inputs, locals.caller);
+  return mcp.tasks.reference(task);
+};
+```
+
+`available` is true only when the app registered a provider and the current client
+declared `io.modelcontextprotocol/tasks`. `reference` validates the app-owned snapshot
+and emits `resultType: "task"`. Argsbarg routes `tasks/get`, `tasks/update`, and
+`tasks/cancel`, applies the MCP surface guard and app hooks to every follow-up, and
+passes fresh request-local `locals` and `signal` to the provider. The provider owns
+ownership checks, state, pending input, results, cancellation, persistence, and expiry.
+
+Mounted child apps keep their own Tasks provider. A child task reference is public as
+`${mountPath.join("__")}__${localTaskId}`; follow-ups strip that exact prefix before
+calling the child provider and run the child's guard, hooks, error reporter, and
+scoped credential view. A child without `mcp.tasks` gets `available: false`; Argsbarg
+never probes the parent or another child. Parent task IDs stay unprefixed, so each
+app-owned provider remains an explicit namespace rather than a fallback chain. App-owned
+local IDs that collide with a mounted descendant prefix are rejected by `reference`
+instead of becoming ambiguously routeable.
+
+Task snapshots are `working`, `input_required`, `completed`, `failed`, or `cancelled`.
+They require `taskId`, `createdAt`, `lastUpdatedAt`, and `ttlMs`; completed tasks add a
+`result`, failed tasks add a JSON-RPC `error`, and input-required tasks add
+`inputRequests`. `update` and `cancel` acknowledge with an empty complete result.
+See [Durable MCP work](use-cases/tasks.md) for the ownership and storage split.
+
 ## Local mirror and relay
 
 ```bash
@@ -100,4 +151,4 @@ The relay performs exactly one `tools/call` request with protocol metadata and f
 
 `mcp bundle` packages the same executable, with stdio launch arguments `serve mcp --stdio`. Bundle, Claude plugin, and Cursor plugin manifests therefore use the same runtime path.
 
-OAuth and external issuers are not supplied by this middleware API. Apps own token verification, metadata, challenge policy, sign-in flows, and upstream authorization; those integrations remain unverified by local fixtures. MCP Tasks are not implemented; see the [durable-work design note](use-cases/tasks.md). Real host compatibility is also unverified; the [harness notes](mcp/harness/README.md) are configuration guidance, not guarantees.
+OAuth and external issuers are not supplied by this middleware API. Apps own token verification, metadata, challenge policy, sign-in flows, and upstream authorization; those integrations remain unverified by local fixtures. Real host compatibility is also unverified; the [harness notes](mcp/harness/README.md) are configuration guidance, not guarantees.

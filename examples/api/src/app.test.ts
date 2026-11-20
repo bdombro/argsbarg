@@ -27,4 +27,11 @@ describe("fullExampleJson schemas", () => {
     assert.equal(result.kind, "next");
     if (result.kind === "next") assert.equal(result.locals.caller, "Ada");
   });
+
+  test("registers the app-owned MCP Tasks provider and probe tool", () => {
+    assert.equal(typeof app.spec.mcp?.tasks?.get, "function");
+    assert.equal(typeof app.spec.mcp?.tasks?.update, "function");
+    assert.equal(typeof app.spec.mcp?.tasks?.cancel, "function");
+    assert.ok(app.spec.mcp?.tools.some((entry) => entry.name === "taskProbe"));
+  });
 });

@@ -8,8 +8,16 @@ import type { Locals } from "../core/types.ts";
 import type { HttpMount, HttpMountContext } from "../server/listener.ts";
 import type { McpDispatchResponse } from "./dispatcher.ts";
 import { dispatchMcpRequestDetailed } from "./dispatcher.ts";
-import { decodeMcpRequest, type McpRequest, type McpServerInfo } from "./protocol.ts";
-import { MCP_HANDLER_STARTED, type McpRegistry } from "./registry.ts";
+import {
+  decodeMcpRequest,
+  type McpErrorResponse,
+  type McpRequest,
+  type McpResultResponse,
+  type McpServerInfo,
+} from "./protocol.ts";
+import { MCP_HANDLER_STARTED } from "./progress.ts";
+import type { McpRegistry } from "./registry.ts";
+import type { McpTaskRuntime } from "./tasks.ts";
 
 /** Stable mount-local view of the MCP routing headers before the body is consumed. */
 export interface McpHttpMiddlewareContext {
@@ -54,6 +62,8 @@ export interface McpHttpConfig<Seed extends object = Locals> {
 export interface CreateMcpHttpMountOptions<Seed extends object> {
   /** One fixed startup registry shared by discovery, listing, and calls. */
   readonly registry: McpRegistry<Seed>;
+  /** Optional configured app-owned Tasks provider runtime. */
+  readonly tasks?: McpTaskRuntime;
   /** Stable identity stamped into every encoded MCP result. */
   readonly serverInfo: McpServerInfo;
   /** Optional fixed discovery instructions. */
@@ -151,7 +161,7 @@ async function handleMcpHttpRequest<Seed extends object>(
   }
 
   const decoded = decodeMcpRequest(body);
-  if (decoded.kind === "error") return jsonResponse(decoded.response);
+  if (decoded.kind === "error") return jsonResponse(decoded.response, mcpProtocolHttpStatus(decoded.response));
   const headerError = validateMethodHeaders(decoded.request, method, name);
   if (headerError !== undefined) return requestError(headerError);
 
@@ -172,6 +182,7 @@ async function handleMcpHttpRequest<Seed extends object>(
     const terminalPromise = dispatchMcpRequestDetailed({
       request: decoded.request,
       registry: options.registry,
+      ...(options.tasks === undefined ? {} : { tasks: options.tasks }),
       base: {
         locals: Object.assign({}, middlewareLocals, options.seedLocals?.() ?? {}, {
           reportProgress: progress.reportProgress,
@@ -210,7 +221,9 @@ async function handleMcpHttpRequest<Seed extends object>(
       ) {
         return denialResponse(winner.outcome.denial);
       }
-      return winner.response === undefined ? new Response(null, { status: 202 }) : jsonResponse(winner.response);
+      return winner.response === undefined
+        ? new Response(null, { status: 202 })
+        : jsonResponse(winner.response, mcpProtocolHttpStatus(winner.response));
     }
 
     const stream = progressStream(
@@ -413,7 +426,10 @@ function validateMethodHeaders(request: McpRequest, method: string, name: string
     return undefined;
   }
   if (
-    (request.method === "server/discover" || request.method === "tools/list" || request.method === "initialize") &&
+    (request.method === "server/discover" ||
+      request.method === "tools/list" ||
+      request.method === "initialize" ||
+      request.method.startsWith("tasks/")) &&
     name !== undefined
   ) {
     return "Mcp-Name is not valid for this MCP method";
@@ -450,6 +466,16 @@ function jsonResponse(body: unknown, status = 200): Response {
     status,
     headers: { "content-type": "application/json" },
   });
+}
+
+/** Maps MCP-defined HTTP-bound protocol errors without changing ordinary JSON-RPC status. */
+function mcpProtocolHttpStatus(response: McpErrorResponse | McpResultResponse): 200 | 400 {
+  if (!("error" in response)) return 200;
+  return response.error.code === -32_020 ||
+    response.error.code === -32_021 ||
+    response.error.code === -32_022
+    ? 400
+    : 200;
 }
 
 /** Creates a linked per-request controller and a one-shot listener unlink. */

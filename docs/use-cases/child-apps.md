@@ -61,7 +61,15 @@ The parent's surface guard and invocation hooks do not apply. If parent policy m
 
 Mount-seeded values flow into child guards; guard `allow(...)` additions reach the handler. Locals, source views, signals, callers, output capture, guard results, and denials are fresh per invocation and never leak. Child hooks and error reporters run once. Parent middleware and hooks observe only the parent-owned wire transport.
 
-MCP Tasks are not implemented. Any later child task follow-up must resolve the composed registration, establish a new caller from the current request/transport, rebuild the scoped source view, rerun child MCP policy, and then perform app-owned ownership and grant checks. It must not reuse old request credentials or skip policy.
+Mounted child apps keep their own `mcp.tasks` provider. A child local task id such as
+`job-7` is returned to MCP clients as `${mountPath.join("__")}__job-7`. Every task
+follow-up uses that exact namespace to select the child provider, strips the namespace
+before calling app-owned `get`, `update`, or `cancel`, and reapplies the child's MCP
+guard, hooks, error reporter, source prefixes, and fresh request locals.
+
+A child with no Tasks provider gets `mcp.tasks.available === false`, even when the
+parent has one. There is no parent-then-child fallback or provider probing: one public
+task id has one deterministic owner. Parent-owned task ids remain unprefixed.
 
 ## Startup collisions
 
@@ -79,7 +87,7 @@ Hidden declarations still claim dispatch identity. Equal child-local names are v
 
 ## Ownership and lifecycle
 
-The parent contributes child routes to `/api`, methods to `/rpc`, tools to `/mcp`, and commands to one CLI tree. The parent owns the listener, service and MCP transport selection, identity, instructions, OAuth admission, discovery, readiness, and shutdown. Child listener settings, host/port, instructions, OAuth configuration, packaging, and lifecycle callbacks are not merged.
+The parent contributes child routes to `/api`, methods to `/rpc`, tools and Tasks providers to `/mcp`, and commands to one CLI tree. The parent owns the listener, service and MCP transport selection, identity, instructions, OAuth admission, discovery, readiness, and shutdown. Child listener settings, host/port, instructions, OAuth configuration, packaging, and lifecycle callbacks are not merged.
 
 There is no dynamic import, startup path loader, global registry, runtime bundle loader, gateway fallback, or separate-process orchestration. Resources captured by child handlers remain owned and closed by the executable that created them.
 

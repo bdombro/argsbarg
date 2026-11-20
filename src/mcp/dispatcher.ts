@@ -17,6 +17,14 @@ import {
   mcpErrorResponse,
 } from "./protocol.ts";
 import type { McpRegisteredTool, McpRegistry } from "./registry.ts";
+import {
+  encodeMcpTaskReference,
+  isMcpTaskReference,
+  MCP_TASKS_EXTENSION,
+  type McpTaskAccess,
+  type McpTaskRuntime,
+  unavailableMcpTaskAccess,
+} from "./tasks.ts";
 
 /** Fixed server capabilities advertised by this MCP-only slice. */
 export const MCP_CAPABILITIES = Object.freeze({ tools: Object.freeze({}) });
@@ -33,6 +41,8 @@ export interface McpDispatchRequest<Seed extends object> {
   readonly serverInfo: McpServerInfo;
   /** Optional fixed server instructions in discovery. */
   readonly instructions?: string;
+  /** Optional configured app-owned Tasks provider runtime. */
+  readonly tasks?: McpTaskRuntime;
 }
 
 /** Transport-neutral response emitted for a request, or `undefined` for a notification. */
@@ -74,7 +84,13 @@ export async function dispatchMcpRequestDetailed<Seed extends object>(
         {
           ...MCP_CACHE_POLICY,
           supportedVersions: [MCP_PROTOCOL_VERSION],
-          capabilities: MCP_CAPABILITIES,
+          capabilities:
+            dispatch.tasks === undefined
+              ? MCP_CAPABILITIES
+              : Object.freeze({
+                  ...MCP_CAPABILITIES,
+                  extensions: Object.freeze({ [MCP_TASKS_EXTENSION]: Object.freeze({}) }),
+                }),
           ...(dispatch.instructions === undefined ? {} : { instructions: dispatch.instructions }),
         },
         dispatch.serverInfo,
@@ -92,6 +108,12 @@ export async function dispatchMcpRequestDetailed<Seed extends object>(
         dispatch.serverInfo,
       ),
     };
+  }
+  if (request.method === "tasks/get" || request.method === "tasks/update" || request.method === "tasks/cancel") {
+    if (dispatch.tasks === undefined) {
+      return { response: mcpErrorResponse(request.id, -32_601, "Method not found") };
+    }
+    return dispatch.tasks.dispatch(request, dispatch.base, dispatch.serverInfo);
   }
   if (request.method !== "tools/call") {
     return { response: mcpErrorResponse(request.id, -32_601, "Method not found") };
@@ -112,7 +134,14 @@ export async function dispatchMcpRequestDetailed<Seed extends object>(
   if (entry === undefined) {
     return { response: mcpErrorResponse(request.id, -32_602, `Unknown tool: ${name}`) };
   }
-  const call = await invokeMcpRegisteredTool(request.id, entry, argumentsValue, dispatch.base, dispatch.serverInfo);
+  const call = await invokeMcpRegisteredTool(
+    request.id,
+    entry,
+    argumentsValue,
+    dispatch.base,
+    dispatch.serverInfo,
+    dispatch.tasks?.access(request, entry.name),
+  );
   return {
     response: call.response,
     ...(call.outcome === undefined ? {} : { outcome: call.outcome }),
@@ -154,6 +183,8 @@ export async function invokeMcpRegisteredTool<Seed extends object>(
   base: InvocationBase<Seed>,
   /** Stable identity encoded in local result metadata. */
   serverInfo: McpServerInfo,
+  /** Capability-aware MCP Tasks helper exposed to the tool handler. */
+  tasks: McpTaskAccess = unavailableMcpTaskAccess(),
 ): Promise<McpRegisteredToolCall> {
   const rawInputs = unwrapInputs(entry, argumentsValue);
   if (rawInputs === invalidInputs) {
@@ -163,7 +194,7 @@ export async function invokeMcpRegisteredTool<Seed extends object>(
       stderr: "",
     };
   }
-  const outcome = await entry.invoke(rawInputs, base);
+  const outcome = await entry.invoke(rawInputs, base, tasks);
   return {
     response: encodeCallOutcome(id, entry, outcome, serverInfo),
     outcome,
@@ -193,6 +224,9 @@ function encodeCallOutcome(
   if (outcome.kind !== "ok") return encodeFailure(id, outcome, serverInfo);
 
   try {
+    if (isMcpTaskReference(outcome.result)) {
+      return encodeMcpTaskReference(id, outcome.result, serverInfo);
+    }
     const structuredValue = entry.outputWrapped ? { result: outcome.result } : outcome.result;
     const text = formatContentText(structuredValue);
     const result: Record<string, unknown> = {

@@ -52,6 +52,9 @@ The example enables completion, version, and independent REST, JSON-RPC, and MCP
 
 - **MCP server**: add `{ "command": "npx", "args": ["-y", "example-api", "serve", "mcp", "--stdio"] }` to your client's MCP config.
 - **Agent skill**: See `skills/example-api/SKILL.md` for agent command group instructions.
+- **MCP Tasks demo**: call `taskProbe` from a task-capable client. The template owns
+  its in-memory task state and exposes guarded `get`, `update`, and `cancel` callbacks;
+  replace that store with the application's real queue or job service.
 
 CLI and local MCP calls may set `EXAMPLE_API_CALLER`; MCP HTTP requests may set
 `X-Example-Api-Caller`. The template's guards seed this non-security caller label

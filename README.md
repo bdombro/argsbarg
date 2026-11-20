@@ -126,7 +126,7 @@ const suite = argsbarg({
 });
 ```
 
-Children are immutable build-time snapshots under parent-owned transports. Keys namespace CLI paths, REST paths and operation IDs, RPC methods, MCP tools, and scoped `ENV_`/header credential names. Child guards and hooks stay attached; parent surface defaults and hooks do not apply to child declarations. This does not merge child processes, listeners, lifecycle, OAuth, Tasks, stores, or runtime bundles.
+Children are immutable build-time snapshots under parent-owned transports. Keys namespace CLI paths, REST paths and operation IDs, RPC methods, MCP tools, MCP task IDs, and scoped `ENV_`/header credential names. Child guards and hooks stay attached; parent surface defaults and hooks do not apply to child declarations. A child MCP Tasks provider owns follow-ups for its exact mounted path; no ancestor or parent provider fallback occurs. This does not merge child processes, listeners, lifecycle, OAuth configuration, stores, or runtime bundles.
 
 ## Templates
 

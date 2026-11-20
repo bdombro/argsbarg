@@ -7,6 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Add an app-owned MCP Tasks provider and `taskProbe` demonstration.
 - Demonstrate D90 MCP policy with one optional token: HTTP middleware verifies
   `Authorization`, while stdio and local calls verify
   `EXAMPLE_AGENT_PLUGIN_TOKEN` through the same MCP guard.

@@ -194,6 +194,26 @@ test("rejects invalid, duplicate, empty, and unconfigured expose values", () => 
   );
 });
 
+test("snapshots mounted child-owned MCP Tasks providers with their policy", () => {
+  const app = child({
+    mcp: {
+      tools: [],
+      tasks: {
+        get: () => {
+          throw new Error("not called");
+        },
+        update: () => undefined,
+        cancel: () => undefined,
+      },
+    },
+  });
+  const snapshot = composeChildren({ suite: { app } });
+  assert.equal(snapshot.mcpTasks.length, 1);
+  assert.equal(snapshot.mcpTasks[0]?.provider, app.spec.mcp?.tasks);
+  assert.deepEqual(snapshot.mcpTasks[0]?.path, ["suite"]);
+  assert.equal(snapshot.mcpTasks[0]?.guard, app.spec.mcp?.guard);
+});
+
 test("scopes exact local and case-insensitive HTTP sources while hiding descendants", () => {
   const reports = child({ mcp: { tools: [mcpTool("list")] } });
   const billing = child({ children: { reports: { app: reports } } });

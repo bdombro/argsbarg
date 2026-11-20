@@ -16,4 +16,11 @@ describe("mcpPlugin schemas", () => {
     assert.equal(result.exitCode, 0, result.stderr);
     assert.match(result.stdout, /"version":"1\.0\.0"/);
   });
+
+  test("registers an app-owned MCP Tasks provider and probe tool", () => {
+    assert.equal(typeof app.spec.mcp?.tasks?.get, "function");
+    assert.equal(typeof app.spec.mcp?.tasks?.update, "function");
+    assert.equal(typeof app.spec.mcp?.tasks?.cancel, "function");
+    assert.ok(app.spec.mcp?.tools.some((entry) => entry.name === "taskProbe"));
+  });
 });

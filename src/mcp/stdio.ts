@@ -15,6 +15,7 @@ import {
   mcpErrorResponse,
 } from "./protocol.ts";
 import type { McpRegistry } from "./registry.ts";
+import type { McpTaskRuntime } from "./tasks.ts";
 
 /** Typed request-local progress control supplied in MCP seed locals. */
 export interface McpProgressLocals {
@@ -26,6 +27,8 @@ export interface McpProgressLocals {
 export interface McpStdioOptions<Seed extends object> {
   /** One immutable registry shared with listing and dispatch. */
   readonly registry: McpRegistry<Seed & McpProgressLocals>;
+  /** Optional configured app-owned Tasks provider runtime. */
+  readonly tasks?: McpTaskRuntime;
   /** Stable identity stamped into every MCP result. */
   readonly serverInfo: McpServerInfo;
   /** Optional fixed instructions returned by `server/discover`. */
@@ -182,6 +185,7 @@ export async function serveMcpStdio<Seed extends object>(options: McpStdioOption
       base,
       instructions: options.instructions,
       registry: options.registry,
+      ...(options.tasks === undefined ? {} : { tasks: options.tasks }),
       request,
       serverInfo: options.serverInfo,
     });

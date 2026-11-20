@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Demonstrate MCP Tasks with an app-owned in-memory provider and `taskProbe`.
 - Demonstrate CLI and MCP guard/caller-seed policy while retaining standalone
   completion, version, HTTP, JSON-RPC, and MCP capability parity.
 - Return plain `version=<version>` status text by default and the JSON object only

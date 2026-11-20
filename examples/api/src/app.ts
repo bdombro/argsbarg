@@ -5,7 +5,7 @@ The version is read from `package.json` at runtime, so the same code runs from
 */
 
 import { readFileSync } from "node:fs";
-import { allow, AppError, argsbarg, type Locals, method, route, tool } from "argsbarg";
+import { allow, AppError, argsbarg, type Locals, type McpTask, method, route, tool } from "argsbarg";
 import { z } from "zod";
 import { echoCommand } from "./commands/echo/command.ts";
 import { renderJsonCommand, RenderJsonInput } from "./commands/render-json/command.ts";
@@ -35,6 +35,24 @@ const WorkspaceOutput = z.strictObject({ id: z.string(), name: z.string() });
 const ShapeBody = z.strictObject({ input: ShapeAreaInput });
 /** App-owned in-memory database shared by explicit native declarations. */
 const db = AppDb.openDb();
+/** Next task identifier used by the app-owned in-memory task demonstration. */
+let nextTaskId = 0;
+/** App-owned task snapshots keyed by task ID and caller. */
+const taskStore = new Map<string, { readonly owner: string; task: McpTask }>();
+
+/** Returns an app-owned task after enforcing caller ownership. */
+function requireTask(
+  /** Task ID supplied by the MCP client. */
+  taskId: string,
+  /** Verified caller stored in MCP locals. */
+  caller: string,
+): { readonly owner: string; task: McpTask } {
+  const record = taskStore.get(taskId);
+  if (record === undefined || record.owner !== caller) {
+    throw new AppError(`Task not found: ${taskId}`, { code: "TASK_NOT_FOUND", httpStatus: 404 });
+  }
+  return record;
+}
 
 /** Returns one workspace or throws the stable not-found domain error. */
 function requireWorkspace<T>(
@@ -233,7 +251,69 @@ export const app = argsbarg({
         inputSchema: z.strictObject({}),
         handler: () => ({ workspaces: db.workspaces.list() }),
       }),
+      tool<Locals>()({
+        name: "taskProbe",
+        description: "Demonstrate an app-owned MCP task.",
+        inputSchema: z.strictObject({ label: z.string() }),
+        handler: ({ inputs, locals, mcp }) => {
+          if (!mcp.tasks.available) return { label: inputs.label, mode: "inline" };
+          const taskId = `example-api-${++nextTaskId}`;
+          const createdAt = new Date().toISOString();
+          taskStore.set(taskId, {
+            owner: locals.caller ?? "anonymous",
+            task: {
+              taskId,
+              status: "working",
+              statusMessage: "Queued by the example app",
+              createdAt,
+              lastUpdatedAt: createdAt,
+              ttlMs: 60_000,
+              pollIntervalMs: 100,
+            },
+          });
+          const timer = setTimeout(() => {
+            const record = taskStore.get(taskId);
+            if (record === undefined || record.task.status !== "working") return;
+            record.task = {
+              ...record.task,
+              status: "completed",
+              statusMessage: "Completed by the example app",
+              lastUpdatedAt: new Date().toISOString(),
+              result: {
+                resultType: "complete",
+                content: [{ type: "text", text: `completed ${inputs.label}` }],
+                isError: false,
+                structuredContent: { label: inputs.label },
+              },
+            };
+          }, 25);
+          timer.unref();
+          const task = taskStore.get(taskId)?.task;
+          if (task === undefined) throw new Error("Task disappeared before publication");
+          return mcp.tasks.reference(task);
+        },
+      }),
     ],
+    tasks: {
+      get: ({ taskId, locals }) => requireTask(taskId, locals.caller ?? "anonymous").task,
+      update: ({ taskId, locals }) => {
+        const task = requireTask(taskId, locals.caller ?? "anonymous").task;
+        if (task.status !== "input_required") {
+          throw new AppError("Task is not waiting for input", { code: "TASK_INPUT_NOT_REQUIRED" });
+        }
+      },
+      cancel: ({ taskId, locals }) => {
+        const record = requireTask(taskId, locals.caller ?? "anonymous");
+        if (record.task.status === "working" || record.task.status === "input_required") {
+          record.task = {
+            ...record.task,
+            status: "cancelled",
+            statusMessage: "Cancelled by caller",
+            lastUpdatedAt: new Date().toISOString(),
+          };
+        }
+      },
+    },
   },
   version,
 });

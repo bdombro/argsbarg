@@ -18,6 +18,8 @@ import {
   type McpHttpMiddleware,
   type McpHttpMiddlewareContext,
   type McpHttpMiddlewareResult,
+  type McpTask,
+  type McpTaskProvider,
   type McpToolSpec,
   tool,
 } from "./index.ts";
@@ -70,6 +72,33 @@ test("package root exports D90 guard and middleware types", () => {
   assert.equal(context.name, "report");
   assert.equal(result.kind, "next");
   assert.equal(tool<{ readonly caller: string }>()(spec).name, "report");
+});
+
+test("package root exports MCP Tasks provider and handler types", () => {
+  const task: McpTask = {
+    taskId: "report-1",
+    status: "working",
+    createdAt: "2026-11-20T20:00:00.000Z",
+    lastUpdatedAt: "2026-11-20T20:00:00.000Z",
+    ttlMs: 60_000,
+  };
+  const provider: McpTaskProvider<{ readonly caller: string }> = {
+    get: ({ taskId, locals }) =>
+      locals.caller.length > 0 ? task : { ...task, taskId },
+    update: () => undefined,
+    cancel: () => undefined,
+  };
+  const inputSchema = z.strictObject({});
+  const spec: McpToolSpec<{ readonly caller: string }, typeof inputSchema, string> = {
+    name: "report_task",
+    description: "Start a report task.",
+    inputSchema,
+    outputSchema: z.string(),
+    handler: ({ locals, mcp }) => (mcp.tasks.available ? mcp.tasks.reference(task) : locals.caller),
+  };
+
+  assert.equal(typeof provider.get, "function");
+  assert.equal(tool<{ readonly caller: string }>()(spec).name, "report_task");
 });
 
 test("package root exports D91 child composition types", () => {

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [9.1.0] - 2026-11-20
+
+- **New:** add MCP 2026 Tasks protocol support through `mcp.tasks`. Apps provide caller-aware `get`, `update`, and `cancel` callbacks; Argsbarg handles capability negotiation, task references, guarded follow-up routing, and wire validation without owning queues or storage. Mounted child providers use exact mount-namespaced task IDs and retain child policy without ancestor fallback.
+
 ## [9.0.2] - 2026-11-20
 
 - **Fix:** let bundled CommonJS dependencies such as `yaml` load Node built-ins in the standalone agent-plugin template.
@@ -1292,7 +1296,8 @@ const cli = { ... } satisfies CliProgram;  // or : CliProgram
 - Migrate schemas: rename every `children` property to **`commands`**; move positional definitions to **`CliPositional`** objects on `positionals` and strip `positional` / `argMin` / `argMax` from flag definitions under `options` (flags only carry `name`, `description`, `kind`, and optional `shortName`).
 - Imports: use `CliPositional` where needed; replace `CliOptionDef` with `CliOption` or `CliPositional` as appropriate.
 
-[Unreleased]: https://github.com/bdombro/argsbarg/compare/v9.0.2...HEAD
+[Unreleased]: https://github.com/bdombro/argsbarg/compare/v9.1.0...HEAD
+[9.1.0]: https://github.com/bdombro/argsbarg/releases/tag/v9.1.0
 [9.0.2]: https://github.com/bdombro/argsbarg/releases/tag/v9.0.2
 [9.0.1]: https://github.com/bdombro/argsbarg/releases/tag/v9.0.1
 [9.0.0]: https://github.com/bdombro/argsbarg/releases/tag/v9.0.0

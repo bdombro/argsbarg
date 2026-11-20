@@ -101,6 +101,17 @@ export type {
   McpToolSpec,
 } from "./mcp/registry.ts";
 export { tool } from "./mcp/registry.ts";
+export type {
+  McpTask,
+  McpTaskAccess,
+  McpTaskOperationContext,
+  McpTaskProvider,
+  McpTaskReference,
+  McpTaskReferenceInput,
+  McpTaskStatus,
+  McpTaskUpdateContext,
+  McpToolInvocationContext,
+} from "./mcp/tasks.ts";
 export type { McpBundlePaths, PackMcpBundleOpts } from "./mcp/pack/bundle.ts";
 export { defaultMcpBundlePaths, generateMcpManifest, packMcpBundle } from "./mcp/pack/bundle.ts";
 export {

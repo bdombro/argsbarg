@@ -10,7 +10,13 @@ import { bindCliCommand, type CliBoundCommand, processEnvView } from "../cli/bin
 import { type CliCallWriter, encodeCliOutcome, presentCliCall } from "../cli/encode.ts";
 import type { CliCallResult, CliFailedCallResult } from "../cli/mirror.ts";
 import { decodeDocument, type DocumentFormat } from "../core/document.ts";
-import type { BoundDeclaration, Guard, InvocationContext, InvocationOutcome } from "../core/invocation.ts";
+import type {
+  BoundDeclaration,
+  Guard,
+  InvocationBase,
+  InvocationContext,
+  InvocationOutcome,
+} from "../core/invocation.ts";
 import { InputError, preloadPipableJson } from "../core/leaf-inputs.ts";
 import { collectPathOptionDefs, ParseKind, type ParseResult, parse, postParseValidate } from "../core/parse.ts";
 import { type SchemaRootExport, schemaExport } from "../core/schema.ts";
@@ -40,12 +46,17 @@ import { createMcpHttpMount } from "../mcp/http.ts";
 import { createMcpCliCalls, type McpCliCallInput, type McpCliCalls } from "../mcp/mirror.ts";
 import { createMcpRegistry, type McpRegistry } from "../mcp/registry.ts";
 import { serveMcpStdio } from "../mcp/stdio.ts";
+import {
+  createMcpTaskRuntime,
+  type McpTaskRuntime,
+} from "../mcp/tasks.ts";
 import { type HttpMount, startHttpListener } from "../server/listener.ts";
 import { resolveHttpServeConfig, type ServeOverrides } from "../server/overrides.ts";
 import { assertBuiltinAllowed, type Capabilities, resolveCapabilities } from "./capabilities.ts";
 import {
   assertNoChildCollisions,
   type ChildCollisionFact,
+  type ChildMcpTaskSnapshot,
   type ChildSnapshot,
   childCliSnapshotForPath,
   composeChildCliCommands,
@@ -288,6 +299,8 @@ export class App {
   private readonly rpcMirror?: JsonRpcMirrorEntries<Locals>;
   /** Retained MCP 2026 registry used by stdio, HTTP, and generated calls. */
   private readonly mcpRegistry?: McpRegistry<Locals>;
+  /** Optional app-owned MCP Tasks provider runtime. */
+  private readonly mcpTasks?: McpTaskRuntime;
   /** Exactly one local/relay MCP call registration pair. */
   private readonly mcpCalls?: McpCliCalls<Locals>;
   constructor(program: AppSpec) {
@@ -350,9 +363,45 @@ export class App {
     if (this.runtimeProgram.mcp !== undefined) {
       this.mcpRegistry = createMcpRegistry<Locals>(this.runtimeProgram.mcp.tools, {
         guard: program.mcp?.guard,
-        decorateInvoke: (name, invoke, rawInputs, base) =>
-          this.invokeMcpWithHooks(invoke, name, rawInputs, base),
+        decorateInvoke: (name, invoke, rawInputs, base, tasks) =>
+          this.invokeMcpWithHooks(invoke, name, rawInputs, base, tasks),
       });
+      const childTaskRoutes = this.childSnapshot.mcpTasks.map((task) => ({
+        prefix: task.path.join("__"),
+        provider: task.provider,
+        ...(task.guard === undefined ? {} : { guard: task.guard }),
+        prepareBase: (base: InvocationBase<Locals>): InvocationBase<Locals> =>
+          scopeChildInvocation(base, task.source),
+        decorateInvoke: (
+          method: "tasks/get" | "tasks/update" | "tasks/cancel",
+          rawInputs: unknown,
+          base: InvocationBase<Locals>,
+          invoke: () => Promise<InvocationOutcome<unknown>>,
+        ): Promise<InvocationOutcome<unknown>> =>
+          this.invokeMcpTaskWithHooks(method, invoke, rawInputs, base, task),
+      }));
+      const childToolRoutes = new Map(
+        this.childSnapshot.mcp.map((entry) => {
+          const owner = this.childSnapshot.mcpTasks.find(
+            (task) =>
+              task.path.length === entry.path.length &&
+              task.path.every((segment, index) => segment === entry.path[index]),
+          );
+          return [entry.tool.name, owner?.path.join("__")] as const;
+        }),
+      );
+      if (this.runtimeProgram.mcp.tasks !== undefined || childTaskRoutes.length > 0) {
+        this.mcpTasks = createMcpTaskRuntime({
+          ...(this.runtimeProgram.mcp.tasks === undefined
+            ? {}
+            : { provider: this.runtimeProgram.mcp.tasks }),
+          ...(program.mcp?.guard === undefined ? {} : { guard: program.mcp.guard }),
+          decorateInvoke: (method, rawInputs, base, invoke) =>
+            this.invokeMcpTaskWithHooks(method, invoke, rawInputs, base),
+          childToolRoutes,
+          routes: childTaskRoutes,
+        });
+      }
       this.mcpCalls = createMcpCliCalls({
         registry: this.mcpRegistry,
         serverInfo: { name: program.key, version: program.version },
@@ -1000,6 +1049,7 @@ export class App {
     if (this.mcpRegistry === undefined) throw new TypeError("MCP is not configured");
     await serveMcpStdio({
       registry: this.mcpRegistry,
+      ...(this.mcpTasks === undefined ? {} : { tasks: this.mcpTasks }),
       serverInfo: { name: this.spec.key, version: this.spec.version },
       ...(this.spec.mcp?.instructions === undefined ? {} : { instructions: this.spec.mcp.instructions }),
       createSeedLocals: () => ({ requestId: randomUUID() }) as Locals,
@@ -1074,6 +1124,7 @@ export class App {
       mounts.push(
         createMcpHttpMount({
           registry: this.mcpRegistry,
+          ...(this.mcpTasks === undefined ? {} : { tasks: this.mcpTasks }),
           serverInfo: { name: this.spec.key, version: this.spec.version },
           ...(this.spec.mcp?.instructions === undefined ? {} : { instructions: this.spec.mcp.instructions }),
           ...(this.spec.mcp?.http?.middleware === undefined
@@ -1107,6 +1158,7 @@ export class App {
     invoke: (
       rawInputs: unknown,
       base: import("../core/invocation.ts").InvocationBase<Locals>,
+      tasks?: import("../mcp/tasks.ts").McpTaskAccess,
     ) => Promise<InvocationOutcome<unknown>>,
     /** Exact selected MCP tool name. */
     name: string,
@@ -1114,13 +1166,15 @@ export class App {
     rawInputs: unknown,
     /** Exact MCP source, signal, and per-call locals. */
     base: import("../core/invocation.ts").InvocationBase<Locals>,
+    /** Capability-aware Tasks access supplied by the dispatcher. */
+    tasks?: import("../mcp/tasks.ts").McpTaskAccess,
   ): Promise<InvocationOutcome<unknown>> {
     const child = this.childSnapshot.mcp.find((entry) => entry.tool.name === name);
     const selectedBase =
       child === undefined ? base : scopeChildInvocation(base, child.source);
     const hooks = child === undefined ? this.spec.hooks : child.hooks;
     const reporter = child === undefined ? this.spec.errorReporter : child.errorReporter;
-    if (hooks === undefined && reporter === undefined) return invoke(rawInputs, selectedBase);
+    if (hooks === undefined && reporter === undefined) return invoke(rawInputs, selectedBase, tasks);
     const scope: InvocationScope = {
       stdout: "",
       stderr: "",
@@ -1137,7 +1191,46 @@ export class App {
         { path: ["mcp", name], hooks, reporter },
         selectedBase,
         rawInputs,
-        () => invoke(rawInputs, selectedBase),
+        () => invoke(rawInputs, selectedBase, tasks),
+        () => ({ stdout: scope.stdout, stderr: scope.stderr }),
+      );
+      return { ...outcome, stdout: `${scope.stdout}${outcome.stdout}`, stderr: `${scope.stderr}${outcome.stderr}` };
+    });
+  }
+
+  /** Runs an app-owned task follow-up through MCP hooks and error reporting. */
+  private async invokeMcpTaskWithHooks(
+    /** Exact task follow-up method. */
+    method: "tasks/get" | "tasks/update" | "tasks/cancel",
+    /** Compiled task provider invocation. */
+    invoke: () => Promise<InvocationOutcome<unknown>>,
+    /** Raw task params parsed by the provider declaration. */
+    rawInputs: unknown,
+    /** Fresh request-owned source, signal, and locals. */
+    base: InvocationBase<Locals>,
+    /** Optional child ownership; omitted for parent operations. */
+    owner?: ChildMcpTaskSnapshot,
+  ): Promise<InvocationOutcome<unknown>> {
+    const hooks = owner === undefined ? this.spec.hooks : owner.hooks;
+    const reporter = owner === undefined ? this.spec.errorReporter : owner.errorReporter;
+    if (hooks === undefined && reporter === undefined) return invoke();
+    const scope: InvocationScope = {
+      stdout: "",
+      stderr: "",
+      exit: (code) => {
+        throw new CliInvokeExit(code);
+      },
+      forbidChdir: true,
+      closed: false,
+      metadata: { source: base.source, surface: base.surface },
+      signal: base.signal,
+    };
+    return runInInvocationScope(scope, async () => {
+      const outcome = await runInvocationHookLifecycle(
+        { path: ["mcp", ...(owner?.path ?? []), ...method.split("/")], hooks, reporter },
+        base,
+        rawInputs,
+        invoke,
         () => ({ stdout: scope.stdout, stderr: scope.stderr }),
       );
       return { ...outcome, stdout: `${scope.stdout}${outcome.stdout}`, stderr: `${scope.stderr}${outcome.stderr}` };

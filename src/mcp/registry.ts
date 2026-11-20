@@ -16,9 +16,15 @@ import type {
 } from "../core/invocation.ts";
 import { compileGuardPlan, composeGuardPlanSurface, invokeBound } from "../runtime/invoke.ts";
 import { toJsonSchema } from "../core/zod-schema.ts";
+import { markMcpHandlerStarted } from "./progress.ts";
+import {
+  type McpTaskAccess,
+  type McpTaskReference,
+  type McpToolInvocationContext,
+  unavailableMcpTaskAccess,
+} from "./tasks.ts";
 
-/** Framework-private marker used to arm HTTP progress only after guard work reaches the handler. */
-export const MCP_HANDLER_STARTED = Symbol("argsbarg.mcp-handler-started");
+export { MCP_HANDLER_STARTED } from "./progress.ts";
 
 /** One explicitly registered MCP tool and its native bound declaration. */
 export interface McpToolEntry<
@@ -44,10 +50,10 @@ export interface McpToolEntry<
   /** Native declaration consumed exactly once by the invocation dispatcher. */
   readonly declaration: BoundDeclaration<
     InputSchema,
-    Result,
+    Result | McpTaskReference,
     Locals,
     Seed,
-    (context: InvocationContext<z.output<InputSchema>, Locals>) => MaybePromise<Result>
+    (context: InvocationContext<z.output<InputSchema>, Locals>) => MaybePromise<Result | McpTaskReference>
   >;
 }
 
@@ -68,7 +74,11 @@ export interface McpToolRegistration<Seed extends object = object> {
   /** Whether successful structured output is placed under the `result` marker. */
   readonly outputWrapped?: boolean;
   /** Typed closure that invokes the concrete declaration without exposing it to the heterogeneous registry. */
-  invoke(rawInputs: unknown, base: InvocationBase<Seed>): Promise<InvocationOutcome<unknown>>;
+  invoke(
+    rawInputs: unknown,
+    base: InvocationBase<Seed>,
+    tasks?: McpTaskAccess,
+  ): Promise<InvocationOutcome<unknown>>;
   /** Recompiles one public tool declaration with the accepted MCP surface guard. */
   withSurfaceGuard?(guard: Guard<unknown, Seed, object> | undefined): McpToolRegistration<Seed>;
 }
@@ -90,7 +100,11 @@ export interface McpRegisteredTool<Seed extends object = object> {
   /** Whether the dispatcher wraps successful structured output under `result`. */
   readonly outputWrapped: boolean;
   /** Typed invocation closure retaining the concrete declaration at its call site. */
-  invoke(rawInputs: unknown, base: InvocationBase<Seed>): Promise<InvocationOutcome<unknown>>;
+  invoke(
+    rawInputs: unknown,
+    base: InvocationBase<Seed>,
+    tasks?: McpTaskAccess,
+  ): Promise<InvocationOutcome<unknown>>;
 }
 
 /** Immutable wire-only tool definition returned to protocol discovery. */
@@ -129,10 +143,10 @@ export class McpRegistry<Seed extends object = object> {
         ...(entry.annotations === undefined ? {} : { annotations: cloneWireValue(entry.annotations) }),
         inputWrapped: entry.inputWrapped ?? false,
         outputWrapped: entry.outputWrapped ?? false,
-        invoke: (rawInputs: unknown, base: InvocationBase<Seed>) =>
+        invoke: (rawInputs: unknown, base: InvocationBase<Seed>, tasks?: McpTaskAccess) =>
           options.decorateInvoke === undefined
-            ? entry.invoke(rawInputs, base)
-            : options.decorateInvoke(entry.name, entry.invoke, rawInputs, base),
+            ? entry.invoke(rawInputs, base, tasks)
+            : options.decorateInvoke(entry.name, entry.invoke, rawInputs, base, tasks),
       });
       byName.set(entry.name, registered);
     }
@@ -191,6 +205,8 @@ export interface McpRegistryOptions<Seed extends object> {
     rawInputs: unknown,
     /** Exact request-owned invocation base. */
     base: InvocationBase<Seed>,
+    /** Capability-aware task helper exposed only to the MCP handler. */
+    tasks: McpTaskAccess | undefined,
   ) => Promise<InvocationOutcome<unknown>>;
 }
 
@@ -200,7 +216,7 @@ export function registerMcpTool<InputSchema extends z.ZodType, Result, Locals ex
 ): McpToolRegistration<Seed> {
   const declaration: typeof entry.declaration = {
     ...entry.declaration,
-    handler: (context) => {
+    handler: (context: InvocationContext<z.output<InputSchema>, Locals>) => {
       markMcpHandlerStarted(context.locals);
       return entry.declaration.handler(context);
     },
@@ -221,20 +237,19 @@ export function registerMcpTool<InputSchema extends z.ZodType, Result, Locals ex
     ...(entry.annotations === undefined ? {} : { annotations: entry.annotations }),
     ...(entry.inputWrapped === undefined ? {} : { inputWrapped: entry.inputWrapped }),
     ...(entry.outputWrapped === undefined ? {} : { outputWrapped: entry.outputWrapped }),
-      invoke: (rawInputs, base) =>
-        invokeBound({ declaration: surfacedDeclaration, rawInputs, base, forbidChdir: true }),
+      invoke: (rawInputs, base, tasks) => {
+        const mcpBase = {
+          ...base,
+          mcp: { tasks: tasks ?? unavailableMcpTaskAccess() },
+        } as InvocationBase<Seed> & {
+          readonly mcp: { readonly tasks: McpTaskAccess };
+        };
+        return invokeBound({ declaration: surfacedDeclaration, rawInputs, base: mcpBase, forbidChdir: true });
+      },
       withSurfaceGuard: register,
     };
   };
   return register(undefined);
-}
-
-/** Arms a request-local MCP progress reporter immediately before one tool handler executes. */
-function markMcpHandlerStarted(locals: object): void {
-  const reportProgress = (locals as Record<string, unknown>).reportProgress;
-  if (typeof reportProgress !== "function") return;
-  const arm = (reportProgress as unknown as Record<PropertyKey, unknown>)[MCP_HANDLER_STARTED];
-  if (typeof arm === "function") arm();
 }
 
 /** Author-facing MCP declaration accepted by the public tool builder. */
@@ -257,7 +272,9 @@ export interface McpToolSpec<
   /** Optional tool-owned supplement, replacement, or public marker. */
   readonly guard?: McpToolBuilderGuard<z.output<InputSchema>, Seed, Added>;
   /** Handler receiving parsed inputs and fresh per-call locals. */
-  handler(context: InvocationContext<z.output<InputSchema>, MergeMcpLocals<Seed, Added>>): MaybePromise<Result>;
+  handler(
+    context: McpToolInvocationContext<z.output<InputSchema>, MergeMcpLocals<Seed, Added>>,
+  ): MaybePromise<Result | McpTaskReference>;
 }
 
 /** Builds one public MCP registration with direct Zod inference and no generated CLI argv. */
@@ -334,9 +351,9 @@ export function tool<Seed extends object = object>(): <
           Seed,
           MergeMcpLocals<Seed, Added>
         >,
-        handler: spec.handler as (
+        handler: spec.handler as unknown as (
           context: InvocationContext<z.output<InputSchema>, MergeMcpLocals<Seed, Added>>,
-        ) => MaybePromise<Result>,
+        ) => MaybePromise<Result | McpTaskReference>,
       },
     });
     return registration;

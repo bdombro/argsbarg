@@ -447,6 +447,8 @@ export interface McpAppConfig<Seed extends object = Locals> {
   readonly tools: readonly McpToolRegistration<Seed>[];
   /** Optional MCP surface guard compiled before every tool operation guard. */
   readonly guard?: Guard<unknown, Seed, object>;
+  /** Optional app-owned provider for MCP Tasks follow-up operations. */
+  readonly tasks?: import("../mcp/tasks.ts").McpTaskProvider<Seed>;
   /** Package-internal HTTP transport boundary with one public middleware callback. */
   readonly http?: McpHttpConfig<Seed>;
   /** Optional instructions returned by MCP discovery. */
