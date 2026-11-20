@@ -7,10 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- **Docs:** add `.agents/` maintenance guidance and a durable thread index with direct links to completed v9 release state and planning evidence.
+
 ## [9.0.0] - 2026-11-20
 
 - **New:** ship intent-first authoring skills for bootstrapping new apps and upserting CLI, REST, JSON-RPC, or MCP capabilities in existing and external apps. All four create templates carry the shared upsert skill, and npm packages both skills.
-- **Breaking:** cut the public package to v9. Handlers receive direct invocation contexts; REST, JSON-RPC, and MCP use explicit `route()`, `method()`, and `tool()` declarations. The `CommandContext`/`respond` API, HTTP/MCP `App.invoke` bridge, argv-derived wire adapters, runtime gateway, and legacy server entry points are removed. Package version remains 8.3.1 until a separately requested release.
+- **Breaking:** cut the public package to v9. Handlers receive direct invocation contexts; REST, JSON-RPC, and MCP use explicit `route()`, `method()`, and `tool()` declarations. The `CommandContext`/`respond` API, HTTP/MCP `App.invoke` bridge, argv-derived wire adapters, runtime gateway, and legacy server entry points are removed.
 - **New:** add `cli.guard` and `mcp.guard`, supplement/override/public operation guards, and one discriminated `mcp.http.middleware` admission result for request-local caller seeding. MCP stdio and local calls continue through fresh local-env-only seeds, relays perform policy at the destination, and HTTP denials with challenge/status metadata complete before progress SSE.
 - **New:** compose standalone apps with keyed `children` mounts. Build-time snapshots namespace CLI, REST, JSON-RPC, and MCP declarations, intersect exposure, scope child environment/header lookups by prefix, preserve child guards/hooks, and fail closed on collisions. The parent alone owns transports and lifecycle; OAuth, Tasks, runtime imports, stores, and child processes remain unmerged.
 - **Fix:** keep compiled declarations, invocation runners, native discovery encoders, and registry/catalog internals off the package root; export only public v9 authoring, middleware, and child-composition contracts.

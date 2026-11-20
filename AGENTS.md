@@ -32,3 +32,11 @@ When changing argsbarg **builtins**, **capabilities**, or **schemagen documentat
 3. Run **`just test`** — includes `src/runtime/template-capabilities.test.ts`.
 
 Do not duplicate framework docs here — see [`docs/cli-program.md`](docs/cli-program.md) and consumer [`AGENTS.md`](examples/api/AGENTS.md).
+
+## Agent planning artifacts
+
+When creating, resuming, superseding, or closing work under `.agents/`, keep
+`.agents/README.md` and `.agents/threads/README.md` current. The thread index must show
+status, outcome, disposition, and direct links to the map, state, memory, and workspace.
+Preserve dropped or superseded history with replacement pointers. Keep `.agents/**` out
+of release commits and store only sanitized planning facts.
