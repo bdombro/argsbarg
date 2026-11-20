@@ -32,12 +32,3 @@ When changing argsbarg **builtins**, **capabilities**, or **schemagen documentat
 3. Run **`just test`** — includes `src/runtime/template-capabilities.test.ts`.
 
 Do not duplicate framework docs here — see [`docs/cli-program.md`](docs/cli-program.md) and consumer [`AGENTS.md`](examples/api/AGENTS.md).
-
-## Memory
-
-Durable context (decisions, rejections, footguns, open items, glossary) is stored in SQLite via the `thread-memory` MCP plugin.
-
-Before substantive work on scoped paths:
-- Call MCP `recall` with the file path (e.g. `path: "src/headless/tool-call.ts"`) or a query.
-- Review returned decisions and footguns before implementing changes.
-- If a memory proved helpful or stale, call MCP `feedback` with its `id`.

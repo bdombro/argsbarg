@@ -1,177 +1,55 @@
-# HTTP API server
+# REST server
 
-ArgsBarg can expose your CLI as an HTTP REST server. Each **command with a handler** becomes a route — nested command paths, HTTP verbs, and `:param` command groups are reflected in the URL. By default routes sit at the server root (e.g. `GET /workspaces`). The server runs on `node:http` and binds to **localhost by default**.
-
-The HTTP API is **opt-in**. Apps that do not set `httpServer` on the app root behave exactly as before.
-
-## Quick start
-
-1. Add `httpServer` to your app root:
+Declare REST routes explicitly with `route()`.
 
 ```typescript
-import pkg from "../package.json" with { type: "json" };
+import { route } from "argsbarg";
+import { z } from "zod";
 
-const app = argsbarg({
-  key: "myapp",
-  version: pkg.version,
-  description: "My app.",
-  httpServer: { enabled: true },
-  commands: [/* ... */],
+const getReport = route()({
+  id: "getReport",
+  method: "GET",
+  path: "/reports/:id",
+  description: "Get a report.",
+  pathParams: z.strictObject({ id: z.string() }),
+  queryParams: z.strictObject({ format: z.enum(["json", "csv"]).optional() }),
+  outputSchema: z.strictObject({ id: z.string() }),
+  handler: ({ inputs }) => ({ id: inputs.id }),
 });
 ```
 
-`httpServer: { enabled: true }` opts in. Omit `httpServer` entirely to disable HTTP. Empty `httpServer: {}` is rejected at validation.
+Register routes in `http.routes`. `ctx.inputs` is one flat parsed object, but route path, query, and body keys must be disjoint. Registration rejects collisions.
 
-2. Run the HTTP server:
+## Wire
 
-```bash
-myapp http
-```
+All REST operations are mounted under `/api`:
 
-The process listens until interrupted. Startup prints the listen URL to stderr.
+| Endpoint | Purpose |
+| --- | --- |
+| `/api/openapi.json` | Fixed OpenAPI 3.1 document |
+| `/api/docs` | Swagger UI |
+| `/api/...` | Explicit registered routes |
 
-Optional flags on `myapp http` (and `myapp http serve`): `--host`, `--port`, `--trust-proxy`, `--obscure-errors`, `--log-format`, `--log-file`, `--no-access-log`, `--dev`.
-
-## Configuration
-
-Set `httpServer` on the **app root only**. Validation rejects `httpServer` on nested nodes.
-
-| Field | Default | Purpose |
-| --- | --- | --- |
-| `enabled` | *(required)* | Must be `true` when `httpServer` is set |
-| `host` | `127.0.0.1` | Listen address |
-| `port` | `3000` | Listen port |
-| `pathPrefix` | `""` | URL prefix for user routes (e.g. `"/api"` → `/api/workspaces`; empty → `/workspaces`) |
-| `trustProxy` | `false` | Honor `X-Forwarded-For` for the client IP (hooks and access logs) |
-| `errors.errorSchema` | `{ error: string }` | OpenAPI + default error body shape |
-| `errors.obscureUnexpected` | `false` | Client sees generic message on 500; ECS logs real stack |
-| `hooks` | — | Wire hooks per request: `onRequest` (awaited before routing), `onResponse`, `onError` |
-
-`httpServer` and `mcpServer` are independent — enable either or both.
-
-## Logging
-
-Server logs (access lines, errors, startup) go to **stderr** as JSON by default. See **[logging.md](logging.md)** for `log`, **`enrich`**, **`serialize`**, trace headers, and examples.
-
-## REST routes
-
-Routes are derived from the command tree:
-
-| CLI path | HTTP | Notes |
-| --- | --- | --- |
-| `workspaces get` | `GET /workspaces` | Verb command (`get`) omitted from URL |
-| `workspaces post` | `POST /workspaces` | Default POST success **201** |
-| `workspaces :id get` | `GET /workspaces/{id}` | `:id` param command group |
-| `stat owner lookup` | `POST /stat/owner/lookup` | Default method POST when key is not a verb |
-
-With `httpServer.pathPrefix: "/api"`, the same routes are prefixed (e.g. `GET /api/workspaces`).
-
-When `pathPrefix` is empty, top-level command keys must not collide with framework paths (`health`, `swagger`, `openapi.json`, `tools`).
-
-Method precedence: `http.method` → verb key (`get`/`post`/…) → **POST**.
-
-Query string binds to options (values starting with `{` or `[` are JSON-parsed). Body on POST/PUT/PATCH binds to options, positionals, and `inputSchema` fields.
-
-Per-surface exposure: `http.enabled: false` removes a command from the route table; `http.hidden: true` keeps it callable but omits it from OpenAPI.
-
-## Endpoints
-
-| Method | Path | Purpose |
-| --- | --- | --- |
-| `GET` | `/health/liveness` | Liveness — server is online and accepting requests |
-| `GET` | `/health/readiness` | Readiness — online and the optional app `readiness` check passed |
-| `GET` | `/openapi.json` | OpenAPI 3.1 REST paths (includes `/health/*` and user routes) |
-| `GET` | `/swagger` | Interactive Swagger UI API reference (CDN) |
-| `*` | `/{command}/...` | Invoke user commands (method per route; optional `pathPrefix`) |
-| `OPTIONS` | `*` | CORS preflight (`GET, POST, PUT, PATCH, DELETE`) |
-
-## Examples
-
-```bash
-curl -s http://127.0.0.1:3000/health/liveness
-curl -s http://127.0.0.1:3000/health/readiness
-curl -s http://127.0.0.1:3000/openapi.json
-open http://127.0.0.1:3000/swagger
-curl -s http://127.0.0.1:3000/workspaces
-curl -s -X POST http://127.0.0.1:3000/workspaces \
-  -H 'content-type: application/json' \
-  -d '{"name":"qa2"}'
-curl -s http://127.0.0.1:3000/workspaces/{id}
-```
-
-Discover paths and request shapes from `GET /openapi.json` (or `/swagger`).
-
-## Handler responses (`ctx.respond()`)
-
-API and MCP tool handlers must return machine-readable output via **`ctx.respond()`** or by **returning a value** (implicit JSON). `console.log` is not included in HTTP/MCP success payloads.
+Launch with `myapp serve http` to start only REST. Bare `myapp serve` starts every configured REST, JSON-RPC, and MCP HTTP mount; `myapp serve http rpc` selects only the named HTTP mounts. Add `--host` or `--port` as needed. Ordinary handler values become JSON responses. Return a Web `Response` for status, headers, downloads, or streaming bodies.
 
 ```typescript
-handler: (ctx) => {
-  if (ctx.hasFlag("json")) {
-    return { user: "alice", path: "/tmp" };
-  }
-  ctx.respond({
-    body: pdfBytes,
-    contentType: "application/pdf",
-    headers: { "Content-Disposition": 'inline; filename="invoice.pdf"' },
-  });
-},
+handler: async ({ signal }) => new Response(download(signal), {
+  headers: { "content-type": "application/octet-stream" },
+});
 ```
 
-**CLI mode:** `ctx.respond()` prints to stdout. Handlers may still use `console.log` for human-only CLI output.
+REST source data is headers only. Process environment is never a fallback on HTTP. A disconnect aborts the request signal but does not imply durable job cancellation.
 
-### Command HTTP metadata
+## Errors
 
-```typescript
-http?: {
-  method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
-  segment?: string;              // URL segment override
-  successStatus?: number;
-  successContentType?: string;   // OpenAPI + default Content-Type
-  contentDisposition?: string;
-};
+`AppError` becomes a stable `{ error: { code, message, details? } }` response. Guard denials preserve explicit HTTP status, headers, and bearer challenge metadata. Unknown errors become a generic server response; native `Response` values remain unchanged.
+
+## Local mirror
+
+```bash
+myapp api GET /api/reports/42
+printf '%s\n' '{"name":"Ada"}' | myapp api POST /api/reports
+myapp api GET /api/reports/42 --relay https://reports.example
 ```
 
-## Responses
-
-**Success:** status from `ctx.respond({ status })` → `http.successStatus` → method default (GET 200, POST 201, DELETE 204 without body).
-
-| Body type | HTTP `Content-Type` |
-| --- | --- |
-| object / array | `application/json` |
-| string | handler `contentType` or `text/plain` |
-| `Uint8Array` | e.g. `application/pdf` (set explicitly) |
-
-**Errors:** JSON `{ "error": "..." }` by default (override with `httpServer.errors.errorSchema`).
-
-| Situation | Status |
-| --- | --- |
-| Validation / help, or the handler throws an `Error` (its message is returned) | 400 |
-| Unknown route | 404 |
-| The handler throws a non-`Error` value, or never responds | 500 (`errors.obscureUnexpected` hides the message) |
-
-`GET /health/readiness` answers 503 when not ready.
-
-Tool invocations are **not** gated on `/health/readiness`; readiness is for orchestrators only.
-
-## Hooks and runtime
-
-App `hooks` (`beforeInvoke`, `afterInvoke`, `formatError`, `onError`) run for user commands on every surface — see [cli-program.md — Hooks](cli-program.md#hooks).
-
-- `ctx.locals` — per-request bag (fresh each invoke); framework sets `requestId` before `beforeInvoke` (HTTP/MCP wire id when present, else a new UUID)
-- `ctx.runtime` — shared `ServerRuntime.state` on HTTP/MCP server sessions
-- `ctx.pathParams` — values from `:param` command groups
-
-Error order: `formatError` → `onError` → ECS log → client response.
-
-## CORS
-
-All responses include wide-open CORS headers (`Access-Control-Allow-Origin: *`). Not configurable.
-
-## OpenAPI
-
-Call `generateOpenApi(app.spec)` from `argsbarg` or fetch `GET /openapi.json`; argsbarg doesn't write the spec to disk. Nested `$ref` in input/output schemas are dereferenced in the spec.
-
-## Complex tool inputs
-
-Set a Zod `inputSchema` on the command (declared with `command`) and read the typed, parsed values with `ctx.inputs`. HTTP query and body merge into inputs before validation; path params are validated only when the schema declares them, otherwise read them from `ctx.pathParams`.
+REST relay URLs are origins. The generated command adds the exact full path supplied by the caller and follows no redirects.

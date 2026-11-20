@@ -13,12 +13,12 @@ import { OptionKind, isInteractiveTty, argsbarg } from "../src/index.ts";
 const app = argsbarg({
   description: "Demo of a required option.",
   handler: (ctx) => {
-    const requiredAlways = ctx.stringOpt("requiredAlways");
+    const requiredAlways = ctx.inputs.requiredAlways;
     if (requiredAlways === undefined) {
       throw new Error("requiredAlways missing after validation");
     }
-    const requiredNonTty = ctx.stringOpt("requiredNonTty") ?? "valueWhenOmitted";
-    const optional = ctx.stringOpt("optional") ?? "valueWhenOmitted";
+    const requiredNonTty = ctx.inputs.requiredNonTty ?? "valueWhenOmitted";
+    const optional = ctx.inputs.optional ?? "valueWhenOmitted";
     console.log(`requiredAlways: ${requiredAlways}`);
     console.log(`requiredNonTty: ${requiredNonTty}`);
     console.log(`optional: ${optional}`);

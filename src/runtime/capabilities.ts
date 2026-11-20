@@ -15,15 +15,15 @@ export interface Capabilities {
 /** Resolves which capabilities are enabled for a program. */
 export function resolveCapabilities(program: AppSpec): Capabilities {
   return {
-    http: program.httpServer?.enabled === true,
+    http: program.http !== undefined,
     completion: program.completion?.enabled !== false,
-    mcp: program.mcpServer?.enabled === true,
+    mcp: program.mcp !== undefined,
   };
 }
 
 /** Reserved top-level command names for the given capabilities. */
 export function reservedCommandNames(caps: Capabilities): string[] {
-  const names = ["version"];
+  const names = ["serve", "version"];
   if (caps.completion) {
     names.unshift("completion");
   }

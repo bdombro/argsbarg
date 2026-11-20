@@ -10,8 +10,8 @@
   "repository": "https://github.com/bdombro/bun-argsbarg",
   "mcpServers": {
     "example-agent-plugin": {
-      "command": "node",
-      "args": ["${CURSOR_PLUGIN_ROOT}/dist/example-agent-plugin.mjs", "mcp"]
+      "command": "${CURSOR_PLUGIN_ROOT}/dist/example-agent-plugin.mjs",
+      "args": ["serve", "mcp", "--stdio"]
     }
   }
 }

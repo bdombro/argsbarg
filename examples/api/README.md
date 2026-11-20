@@ -23,8 +23,8 @@ Requires Node ≥ 22.13 (`node:sqlite`). Shell completions: `example-api complet
 ### Built-in commands
 
 - `example-api completion` — Print shell tab-completion scripts (bash, zsh, fish).
-- `example-api http` — Start the HTTP API server.
-- `example-api mcp` — Start the Model Context Protocol (stdio) server for AI coding agents.
+- `example-api serve http` — Start the shared HTTP listener.
+- `example-api serve mcp --stdio` — Start the MCP stdio server.
 - `example-api version` — Display version information.
 
 ## Usage
@@ -37,21 +37,30 @@ example-api echo "Hello, world!"
 example-api status --json
 
 # Workspaces over HTTP (the in-memory database lives in the server process)
-example-api http &
-curl -s localhost:3000/workspaces
+example-api serve http &
+curl -s localhost:3000/api/workspaces
 
 # Start the MCP server for AI agents
-example-api mcp
+example-api serve mcp --stdio
 ```
 
 ## AI Agent & MCP Integration
 
 `example-api` includes an MCP server and an agent skill:
 
-MCP negotiates through `2025-11-25` and retains both previously supported revisions. Output validation is opt-in with `mcpServer.validateOutputs: true`; default result envelopes are unchanged. Completion, version, MCP, and HTTP remain enabled.
+The example enables completion, version, and independent REST, JSON-RPC, and MCP declarations.
 
-- **MCP server**: add `{ "command": "npx", "args": ["-y", "example-api", "mcp"] }` to your client's MCP config.
+- **MCP server**: add `{ "command": "npx", "args": ["-y", "example-api", "serve", "mcp", "--stdio"] }` to your client's MCP config.
 - **Agent skill**: See `skills/example-api/SKILL.md` for agent command group instructions.
+
+CLI and local MCP calls may set `EXAMPLE_API_CALLER`; MCP HTTP requests may set
+`X-Example-Api-Caller`. The template's guards seed this non-security caller label
+only. Replace the demonstration policy with real credential verification before
+protecting an application.
+
+The template stays standalone rather than mounting a child app merely to
+demonstrate composition. Apps that need it use keyed `children` mounts and keep
+each child declaration's own guards and hooks.
 
 
 ## Development

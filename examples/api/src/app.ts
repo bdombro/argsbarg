@@ -5,12 +5,13 @@ The version is read from `package.json` at runtime, so the same code runs from
 */
 
 import { readFileSync } from "node:fs";
-import { argsbarg } from "argsbarg";
+import { allow, AppError, argsbarg, type Locals, method, route, tool } from "argsbarg";
+import { z } from "zod";
 import { echoCommand } from "./commands/echo/command.ts";
-import { renderJsonCommand } from "./commands/render-json/command.ts";
-import { shapeAreaCommand } from "./commands/shape-area/command.ts";
-import { statusCommand } from "./commands/status/command.ts";
-import { workspacesCommand } from "./commands/workspaces/command.ts";
+import { renderJsonCommand, RenderJsonInput } from "./commands/render-json/command.ts";
+import { shapeAreaCommand, ShapeAreaInput } from "./commands/shape-area/command.ts";
+import { statusCommand, StatusJsonOutput } from "./commands/status/command.ts";
+import { WorkspaceNameInput, workspacesCommand } from "./commands/workspaces/command.ts";
 import { createIdentity } from "./create-identity.ts";
 import { AppDb } from "./db/index.ts";
 
@@ -24,16 +25,215 @@ function packageFile(
 
 /** Package version from `package.json` (bumped by `npm run release`). */
 const version = (JSON.parse(packageFile("package.json")) as { version: string }).version;
+/** JSON input shared by the REST, RPC and MCP echo declarations. */
+const EchoInput = z.strictObject({ message: z.string() });
+/** JSON input for single-workspace lookup declarations. */
+const WorkspaceIdInput = z.strictObject({ id: z.string() });
+/** Generic workspace mutation result. */
+const WorkspaceOutput = z.strictObject({ id: z.string(), name: z.string() });
+/** Wrapped REST body for the non-object shape union. */
+const ShapeBody = z.strictObject({ input: ShapeAreaInput });
+/** App-owned in-memory database shared by explicit native declarations. */
+const db = AppDb.openDb();
 
+/** Returns one workspace or throws the stable not-found domain error. */
+function requireWorkspace<T>(
+  /** Workspace value returned by the table lookup. */
+  value: T | undefined,
+  /** Requested workspace id included in a missing-resource error. */
+  id: string,
+): T {
+  if (value !== undefined) return value;
+  throw new AppError(`Workspace not found: ${id}`, { code: "WORKSPACE_NOT_FOUND", httpStatus: 404 });
+}
+
+/** Full example app with independently declared CLI, REST, JSON-RPC, and MCP surfaces. */
 export const app = argsbarg({
+  cli: {
+    guard: ({ env, source }) =>
+      allow({
+        caller: source === "local" ? (env.get("EXAMPLE_API_CALLER") ?? "anonymous") : "anonymous",
+      }),
+  },
   commands: [echoCommand, renderJsonCommand, shapeAreaCommand, statusCommand, workspacesCommand],
   description: createIdentity.desc,
   hooks: {
     beforeInvoke: AppDb.attach,
   },
-  httpServer: { enabled: true },
+  http: {
+    routes: [
+      route()({
+        body: EchoInput,
+        description: "Echo a message.",
+        handler: ({ inputs }) => inputs.message,
+        id: "echo",
+        method: "POST",
+        outputSchema: z.string(),
+        path: "/echo",
+      }),
+      route()({
+        body: RenderJsonInput,
+        description: "Echo a JSON message.",
+        handler: ({ inputs }) => inputs,
+        id: "renderJson",
+        method: "POST",
+        outputSchema: RenderJsonInput,
+        path: "/render-json",
+      }),
+      route()({
+        body: ShapeBody,
+        description: "Compute a shape area.",
+        handler: ({ inputs }) => ({
+          area:
+            inputs.input.kind === "circle"
+              ? Math.PI * inputs.input.radius ** 2
+              : inputs.input.width * inputs.input.height,
+        }),
+        id: "shapeArea",
+        method: "POST",
+        outputSchema: z.strictObject({ area: z.number() }),
+        path: "/shape-area",
+      }),
+      route()({
+        description: "Show app version.",
+        handler: () => ({ version }),
+        id: "status",
+        method: "GET",
+        outputSchema: StatusJsonOutput,
+        path: "/status",
+      }),
+      route()({
+        description: "List workspaces.",
+        handler: () => ({ workspaces: db.workspaces.list() }),
+        id: "listWorkspaces",
+        method: "GET",
+        outputSchema: z.strictObject({ workspaces: z.array(WorkspaceOutput) }),
+        path: "/workspaces",
+      }),
+      route()({
+        body: WorkspaceNameInput,
+        description: "Create a workspace.",
+        handler: ({ inputs }) => db.workspaces.create(inputs.name),
+        id: "createWorkspace",
+        method: "POST",
+        outputSchema: WorkspaceOutput,
+        path: "/workspaces",
+      }),
+      route()({
+        description: "Get one workspace.",
+        handler: ({ inputs }) => requireWorkspace(db.workspaces.get(inputs.id), inputs.id),
+        id: "getWorkspace",
+        method: "GET",
+        outputSchema: WorkspaceOutput,
+        path: "/workspaces/:id",
+        pathParams: WorkspaceIdInput,
+      }),
+      route()({
+        body: WorkspaceNameInput,
+        description: "Replace a workspace.",
+        handler: ({ inputs }) => requireWorkspace(db.workspaces.replace(inputs.id, inputs.name), inputs.id),
+        id: "replaceWorkspace",
+        method: "PUT",
+        outputSchema: WorkspaceOutput,
+        path: "/workspaces/:id",
+        pathParams: WorkspaceIdInput,
+      }),
+      route()({
+        body: WorkspaceNameInput,
+        description: "Patch a workspace.",
+        handler: ({ inputs }) => requireWorkspace(db.workspaces.patch(inputs.id, inputs.name), inputs.id),
+        id: "patchWorkspace",
+        method: "PATCH",
+        outputSchema: WorkspaceOutput,
+        path: "/workspaces/:id",
+        pathParams: WorkspaceIdInput,
+      }),
+      route()({
+        description: "Delete a workspace.",
+        handler: ({ inputs }) => {
+          if (!db.workspaces.delete(inputs.id)) requireWorkspace(undefined, inputs.id);
+          return new Response(null, { status: 204 });
+        },
+        id: "deleteWorkspace",
+        method: "DELETE",
+        path: "/workspaces/:id",
+        pathParams: WorkspaceIdInput,
+        responses: [{ status: 204, description: "Workspace deleted." }],
+      }),
+    ],
+  },
+  jsonRpc: {
+    methods: [
+      method()({ name: "echo", description: "Echo a message.", inputSchema: EchoInput, handler: ({ inputs }) => inputs.message }),
+      method()({
+        name: "renderJson",
+        description: "Echo a JSON message.",
+        inputSchema: RenderJsonInput,
+        handler: ({ inputs }) => inputs,
+      }),
+      method()({
+        name: "shapeArea",
+        description: "Compute a shape area.",
+        inputSchema: ShapeBody,
+        handler: ({ inputs }) => ({
+          area:
+            inputs.input.kind === "circle"
+              ? Math.PI * inputs.input.radius ** 2
+              : inputs.input.width * inputs.input.height,
+        }),
+      }),
+      method()({
+        name: "status",
+        description: "Show app version.",
+        inputSchema: z.strictObject({}),
+        outputSchema: StatusJsonOutput,
+        handler: () => ({ version }),
+      }),
+    ],
+  },
   key: createIdentity.key,
-  mcpServer: { enabled: true },
-  readiness: AppDb.checkReadiness,
+  mcp: {
+    guard: ({ env, locals, source }) =>
+      allow({
+        caller:
+          locals.caller ??
+          (source === "local" ? (env.get("EXAMPLE_API_CALLER") ?? "anonymous") : "anonymous"),
+      }),
+    http: {
+      middleware: (_request, { headers }) => ({
+        kind: "next",
+        locals: {
+          caller: headers.get("X-Example-Api-Caller") ?? "anonymous",
+          db,
+        },
+      }),
+    },
+    tools: [
+      tool<Locals>()({ name: "echo", description: "Echo a message.", inputSchema: EchoInput, handler: ({ inputs }) => inputs.message }),
+      tool<Locals>()({ name: "renderJson", description: "Echo a JSON message.", inputSchema: RenderJsonInput, handler: ({ inputs }) => inputs }),
+      tool<Locals>()({
+        name: "shapeArea",
+        description: "Compute a shape area.",
+        inputSchema: ShapeAreaInput,
+        handler: ({ inputs }) => ({
+          area:
+            inputs.kind === "circle" ? Math.PI * inputs.radius ** 2 : inputs.width * inputs.height,
+        }),
+      }),
+      tool<Locals>()({
+        name: "status",
+        description: "Show app version.",
+        inputSchema: z.strictObject({}),
+        outputSchema: StatusJsonOutput,
+        handler: () => ({ version }),
+      }),
+      tool<Locals>()({
+        name: "workspaces",
+        description: "List workspaces.",
+        inputSchema: z.strictObject({}),
+        handler: () => ({ workspaces: db.workspaces.list() }),
+      }),
+    ],
+  },
   version,
 });

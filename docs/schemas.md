@@ -1,83 +1,38 @@
-# Schemas (Zod)
+# Schemas
 
-Argsbarg schemas are authored in [**Zod 4**](https://zod.dev) (`zod` is a peer dependency). Zod validates at runtime, and argsbarg emits JSON Schema (draft 2020-12) for everything agents and tools read: MCP `tools/list`, OpenAPI (`/openapi.json`), and piped `--help`. Plain JSON Schema objects in these fields fail at startup with a migration error.
+Argsbarg accepts Zod 4 schemas and emits JSON Schema 2020-12 for REST, JSON-RPC, MCP, and help. Zod is the runtime validator and peer dependency.
 
-## Where schemas go
+## Input
 
-| Field | Emitted as | Validated at runtime |
-| --- | --- | --- |
-| Command `inputSchema` | `io: "input"` | Yes, before the handler (CLI, HTTP, MCP); the parsed value becomes `ctx.inputs` |
-| Command `pathParams` | `io: "input"` | Yes, before the handler |
-| Command `outputSchema` | `io: "output"` | MCP: optional with `mcpServer.validateOutputs: true`. Otherwise metadata and handler return typing only, as on CLI/REST |
-| `httpServer.errors.errorSchema` / `mcpServer.errors.errorSchema` | `io: "output"` | No |
+Each native declaration owns one input schema:
 
-Declare commands with `command({ … })` so `ctx.inputs`, `ctx.pathParams`, and the handler's return value are typed from these schemas (see [cli-program.md](cli-program.md)).
+- CLI: command options, positionals, path captures, and optional `inputSchema`.
+- REST: `pathParams`, `queryParams`, and `body`, flattened into `ctx.inputs`.
+- JSON-RPC: `inputSchema`, with optional tuple `paramNames`.
+- MCP: `inputSchema`.
 
-## Authoring rules
-
-- **Describe everything with `.describe("…")`.** Descriptions are the documentation agents read. Zod doesn't read JSDoc, so copy any JSDoc into `.describe()` on each field, nested object, union branch, and alias.
-- **Prefer `z.strictObject`.** It emits `additionalProperties: false` and rejects unknown keys, so agents get feedback on typos. `z.object` silently strips unknown keys; MCP and HTTP servers log a `schema.strictness` warning at startup for input objects that accept them. `schemaStrictnessWarnings(app.spec)` returns the same list — assert it's empty in a test (the schema templates do, in `src/app.test.ts`).
-- **One schema per shape, with a same-named type:** `export const X = z.strictObject({…}); export type X = z.infer<typeof X>;`, at the top of the command's `command.ts` (move them to a sibling `schemas.ts` only when shared or large). The same name works as a value and a type, so `import type { X }` keeps working.
-- **Discriminated unions:** `z.discriminatedUnion("kind", [...])` emits `oneOf` and reports one precise error (`kind: Invalid discriminator value. Expected 'circle' | 'rect'`). MCP wraps non-object input roots as `{ input }` and output roots as `{ result }` (see [mcp.md](mcp.md#object-rooted-schemas-and-wrapping)).
-- **Defaults:** `.default(v)` makes a field optional in the emitted input schema, records `default`, and fills the value into `ctx.inputs`.
-- **Recursion:** getters or `z.lazy` emit `$ref`. A recursive *union root* emits `$ref: "#"`, which breaks once MCP wraps the root; argsbarg rejects it at startup when MCP is enabled. Give the recursive part an object root instead.
-- **Formats:** `z.iso.datetime()`, `z.iso.date()`, and `z.email()` emit `format` plus a regex `pattern`. The patterns are long, so watch MCP size budgets for big schemas.
-
-## Unrepresentable constructs
-
-Argsbarg emits every schema eagerly at startup with `unrepresentable: "throw"`, so constructs JSON Schema can't express fail immediately, naming the command:
-
-- `z.date()`, `z.bigint()`, `z.map()`, `z.set()`, `z.symbol()`
-- `.transform()` in an `outputSchema` or `errorSchema` (emitted with `io: "output"`). In an `inputSchema` only the input side is emitted, so transforms there are fine.
-
-Use JSON-friendly types instead (`z.iso.datetime()` rather than `z.date()`). Refinements (`.refine()`) validate at runtime but don't appear in the emitted schema, so agents see a looser contract than the one enforced — describe the rule in `.describe()`.
-
-## Input schemas
-
-With an `inputSchema`, `ctx.inputs` is Zod's **parsed output**: defaults applied, transforms run, and (with strict schemas) unknown keys rejected.
-
-On option-based commands the validated object is the merged options, positionals, and MCP/HTTP tool arguments. Path parameters from `:param` command groups are validated only when the command declares `pathParams`; otherwise they're left out of validation and merged back into `ctx.inputs`.
-
-Validation errors are Zod messages prefixed with the value's path, capped at 10 plus a count. Missing fields read `required`, unknown keys list the allowed ones, and union/enum mismatches echo the rejected value:
-
-```text
-steps.0.kind: Invalid discriminator value. Expected 'alpha' | 'beta' (got "alfa")
-name: required
-$: Unrecognized key: "extra" (allowed: name, tags)
-```
-
-## Output schemas
-
-Set `outputSchema` on a command when its handler emits JSON (with `--json`, always for JSON-only commands, or on the MCP headless path):
+Use `z.strictObject`. Validate once, then consume `ctx.inputs`. Defaults and transforms appear in the parsed value.
 
 ```typescript
-// src/commands/status/command.ts
-import { command } from "argsbarg";
-import { z } from "zod";
-
-/** JSON stdout for `myapp status --json`. */
-export const StatusJsonOutput = z.strictObject({
-  version: z.string().describe("App version from the app spec."),
-});
-export type StatusJsonOutput = z.infer<typeof StatusJsonOutput>;
-
-export const statusCommand = command({
-  key: "status",
-  description: "Show environment status.",
-  outputSchema: StatusJsonOutput,
-  handler: (ctx) => ({ version: ctx.spec.version }), // typed against StatusJsonOutput
+const Input = z.strictObject({
+  count: z.number().int().positive().describe("Number of rows."),
 });
 ```
 
-- **MCP output validation is opt-in.** Set `mcpServer.validateOutputs: true` to require typed handler JSON to match its schema without coercion, defaults, or key stripping; otherwise the call returns `isError: true`. Typed results then use the bare value inside any required `result` wrapper, with matching JSON text. By default the released output envelopes remain unchanged and schemas are metadata/typing-only. CLI and REST are unchanged.
-- **Set it on the command,** not under `mcpTool`.
-- **Handlers that only print** still type-check, but MCP needs a returned value or `ctx.respond()`; captured stdout alone is not a result.
-- **Narrowing:** when a shared runtime type is wider than one command's JSON, give the command its own schema (`.pick()`, `.omit()`, or a fresh `z.strictObject`) and add an assignability test so runtime rows keep satisfying it.
-- **Strings and scalars** can have output schemas too; MCP wraps non-object schemas and results under `result`. Default strings retain their `{ content, contentType }` envelope; validation opt-in emits the typed string instead. Streaming and Ink-only commands still need a headless result path.
+REST rejects registration when the three input schemas share any key. RPC and MCP reject malformed native params before handler side effects.
 
-Reference implementation: [`examples/api/`](../examples/api/) — `status` (`StatusJsonOutput`) and `shape-area` (a discriminated-union input).
+## Output
 
-## Notes
+`outputSchema` types and documents successful handler values. REST and RPC encoders keep their native error paths; MCP emits complete structured protocol results. A REST handler may return `Response` when a route documents native media, streams, status, or headers.
 
-- Emitted schemas are memoized per schema object and frozen; treat them as read-only.
-- The Zod adapter is one module (`src/core/zod-schema.ts` in the repo), so the rest of argsbarg works on JSON Schema.
+Non-object MCP roots are wrapped under `input` or `result` for protocol object-root requirements. Handlers still receive and return the authored bare value.
+
+## Rules
+
+- Put `.describe()` on agent-visible fields; JSON Schema cannot read JSDoc.
+- JSON-friendly values only: no `Date`, `BigInt`, `Map`, or `Set`.
+- Prefer finite strict objects for route source schemas.
+- Refinements validate at runtime but may not have an exact JSON Schema representation.
+- Emitted schemas are immutable and memoized.
+
+See the API template for shared schemas and independently declared routes, methods, and tools.

@@ -1,11 +1,14 @@
+/*
+Routes accepted non-service framework built-ins after CLI parsing.
+Service startup is handled only by the runtime `serve` dispatcher.
+*/
+
 import type { ParseResult } from "../core/parse.ts";
 import { ParseKind } from "../core/parse.ts";
 import type { AppSpec, Command, CommandGroup } from "../core/types.ts";
 import { hasHandler } from "../core/types.ts";
 import { runMcpBundle } from "../mcp/pack/bundle.ts";
 import { resolveCapabilities } from "../runtime/capabilities.ts";
-import { App } from "../runtime/cli.ts";
-import { serveOverridesFromOpts } from "../server/overrides.ts";
 import { completionBashScript } from "./completion/bash.ts";
 import { completionFishScript } from "./completion/fish.ts";
 import { cliBuiltinCompletionGroup as completionGroup } from "./completion/group.ts";
@@ -16,10 +19,13 @@ import { cliPresentationRoot } from "./presentation.ts";
 import { cliBuiltinVersionCommand } from "./registry.ts";
 
 export interface DispatchBuiltinOpts {
+  /** Whether completion is represented by a leaf program's wrapped schema. */
   isLeafCompletionIntercept: boolean;
+  /** Parsed root retained for ordinary completion generation. */
   parseRoot: CommandGroup;
 }
 
+/** Returns the accepted completion schema for normal or leaf-program intercepts. */
 function completionSchema(program: AppSpec, opts: DispatchBuiltinOpts): CommandGroup {
   if (opts.isLeafCompletionIntercept) {
     return cliPresentationRoot(program);
@@ -64,24 +70,9 @@ export async function dispatchBuiltin(program: AppSpec, pr: ParseResult, opts: D
     process.exit(0);
   }
 
-  // With the capability off, `http` is an ordinary name (the app's own command, if any).
-  if (pr.path[0] === "http" && caps.http) {
-    const sub = pr.path[1];
-    if (pr.path.length === 1 || sub === "serve") {
-      await new App(program).serveHttp(serveOverridesFromOpts(pr.opts, "http"));
-      process.exit(0);
-    }
-    process.stderr.write(`Unknown subcommand: http ${pr.path.slice(1).join(" ")}\n`);
-    process.exit(1);
-  }
-
   // With the capability off, `mcp` is an ordinary name (the app's own command, if any).
   if (pr.path[0] === "mcp" && caps.mcp) {
     const sub = pr.path[1];
-    if (pr.path.length === 1 || sub === "serve") {
-      await new App(program).serveMcp(serveOverridesFromOpts(pr.opts, "mcp"));
-      process.exit(0);
-    }
     if (pr.path.length === 2 && sub === "bundle") {
       try {
         runMcpBundle(program);

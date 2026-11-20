@@ -1,137 +1,151 @@
 ```
-                          ___.                        
-_____ _______  ____  _____\_ |__ _____ _______  ____  
-\__  \\_  __ \/ ___\/  ___/| __ \\__  \\_  __ \/ ___\ 
- / __ \|  | \/ /_/  >___ \ | \_\ \/ __ \|  | \/ /_/  >
-(____  /__|  \___  /____  >|___  (____  /__|  \___  / 
-     \/     /_____/     \/     \/     \/     /_____/  
-```
-<!-- src https://patorjk.com/software/taag/#p=display&f=Graffiti&t=argsbarg&x=none&v=4&h=4&w=80&we=false -->
-
-[GitHub](https://github.com/bdombro/argsbarg) · [npm](https://www.npmjs.com/package/argsbarg) · [License: MIT](LICENSE)
-
-Build well-behaved CLIs, HTTP REST services, and MCP servers from one schema. Runs on Node ≥ 20 (Bun runs the same build). No production dependencies; one peer: [Zod](https://zod.dev).
-
-- **Schema-first** — declare commands, options, positionals, and Zod input/output schemas once; argsbarg parses, validates, types `ctx.inputs`, and routes.
-- **Zod schemas** — validated with Zod and emitted as JSON Schema for MCP, OpenAPI, and help. No codegen step.
-- **HTTP REST server** — commands become routes, with `/health/liveness`, `/health/readiness`, `/openapi.json`, `/swagger`, and ECS JSON logs on stderr.
-- **MCP server** — MCP stdio tools with negotiation through `2025-11-25`, session workspace discovery, cancellation, progress, and optional output validation; package as a plugin or `.mcpb` bundle.
-- **Plain-text help** — scoped `-h` at any depth, no color or boxes; when piped, help includes the input and output schemas for agents.
-- **Shell completions** — `completion bash|zsh|fish`.
-
-Also check out ArgsBarg for [cpp](https://github.com/bdombro/cpp-argsbarg), [nim](https://github.com/bdombro/nim-argsbarg), and [swift](https://github.com/bdombro/swift-argsbarg).
-
-```text
-$ nested.ts --help
-Nested groups demo.
-
-── Usage ───────────────────────────────────────────────────────────────────────
-  nested.ts [OPTIONS] COMMAND [ARGS]...
-
-── Options ─────────────────────────────────────────────────────────────────────
-  --help, -h  Show help for this command.
-
-── Commands ────────────────────────────────────────────────────────────────────
-  mcp      MCP server and bundle tools.
-  read     Print the first line of each file.
-  stat     File metadata.
-  version  Print the program version.
+                          ___.
+_____ _______  ____  _____\_ |__ _____ _______  ____
+\__  \\_  __ \/ ___\/  ___/| __ \\__  \\_  __ \/ ___\
+ / __ \|  | \/ /_/  >___ \ | \_\ \/ __ \|  | \/ /_/>
+(____  /__|  \___  /____  >|___  (____  /__|  \___  /
+     \/     /_____/     \/     \/     \/     \/____/
 ```
 
-## Getting started
+[GitHub](https://github.com/bdombro/argsbarg) · [npm](https://www.npmjs.com/package/argsbarg) · MIT
 
-Scaffold a project (TypeScript, Biome, `node:test`, just, and a gated release script):
+Argsbarg builds a CLI, REST API, JSON-RPC server, and MCP server from explicit declarations. One package and one executable own the surfaces; declarations share business logic without pretending every CLI command is a wire endpoint.
+
+Requirements: Node 20+, Zod 4 peer dependency.
+
+## Start
 
 ```bash
-npx argsbarg@latest create my-app          # interactive: pick a template, key, release repo
-npx argsbarg@latest create my-app --template api --key my-app --release-repo org/my-app --yes
+npm install argsbarg zod
 ```
 
-Or add it to an existing app: `npm install argsbarg zod`.
-
 ```typescript
-import { argsbarg, command, OptionKind } from "argsbarg";
+import { argsbarg, command, method, route, tool } from "argsbarg";
+import { z } from "zod";
 
+const Input = z.strictObject({ name: z.string() });
 const app = argsbarg({
+  cli: {
+    guard: requireLocalCaller,
+  },
   commands: [
     command({
       key: "greet",
-      description: "Greet someone by name.",
-      options: [{ name: "loud", description: "Shout the greeting.", kind: OptionKind.Presence }],
-      positionals: [{ name: "name", description: "Who to greet.", kind: OptionKind.String, argMin: 0 }],
-      handler: (ctx) => {
-        const greeting = `hello ${ctx.inputs.name ?? "world"}`;
-        console.log(ctx.inputs.loud ? greeting.toUpperCase() : greeting);
-      },
+      description: "Greet someone.",
+      guard: "public",
+      inputSchema: Input,
+      kind: "document",
+      handler: ({ inputs }) => `hello ${inputs.name}`,
     }),
   ],
-  description: "Tiny demo.",
-  httpServer: { enabled: true },
-  key: "helloapp",
-  mcpServer: { enabled: true },
+  description: "Greeting tools.",
+  http: {
+    routes: [
+      route()({
+        id: "greet",
+        method: "POST",
+        path: "/greet",
+        description: "Greet someone.",
+        body: Input,
+        outputSchema: z.string(),
+        handler: ({ inputs }) => `hello ${inputs.name}`,
+      }),
+    ],
+  },
+  jsonRpc: {
+    methods: [
+      method()({
+        name: "greet",
+        description: "Greet someone.",
+        inputSchema: Input,
+        outputSchema: z.string(),
+        handler: ({ inputs }) => `hello ${inputs.name}`,
+      }),
+    ],
+  },
+  key: "hello",
+  mcp: {
+    guard: requireMcpCaller,
+    http: {
+      middleware: async (_request, { headers }) => {
+        const token = headers.get("Authorization");
+        return token
+          ? { kind: "next", locals: { caller: await verifyToken(token) } }
+          : { kind: "respond", response: new Response(null, { status: 401 }) };
+      },
+    },
+    tools: [
+      tool()({
+        name: "greet",
+        description: "Greet someone.",
+        guard: requireReportScope,
+        inputSchema: Input,
+        outputSchema: z.string(),
+        handler: ({ inputs }) => `hello ${inputs.name}`,
+      }),
+    ],
+  },
   version: "1.0.0",
 });
 
 await app.run();
 ```
 
-`app.run()` parses `process.argv`, prints help or errors, runs the handler, and exits: **0** on success or explicit `--help`, **1** on errors or implicit help. `app.invoke(argv)` runs a command without exiting (tests, HTTP, MCP).
+Handlers receive `ctx.inputs`, `ctx.locals`, `ctx.signal`, `ctx.surface`, and exactly one credential source (`ctx.env` or `ctx.headers`). They return values or a native Web `Response`.
+
+```bash
+hello greet '{"name":"Ada"}'
+hello serve                  # all configured HTTP mounts
+hello serve http
+hello serve rpc
+hello serve mcp --stdio
+printf '%s\n' '{"name":"Ada"}' | hello api POST /api/greet
+printf '%s\n' '{"name":"Ada"}' | hello rpc greet
+printf '%s\n' '{"name":"Ada"}' | hello mcp call greet
+```
+
+Bare `serve` starts every configured HTTP mount. Name a surface, such as `serve http`, to start only that HTTP mount; `serve mcp --stdio` is the separate stdio transport.
+
+`api`, `rpc`, and `mcp call` execute locally and read an optional JSON document from stdin. Add `--relay <url>` for one explicit request; repeat `--header name:value` only for relay credentials. A relay never falls back to local execution.
+
+## Composition and policy
+
+`cli.guard` protects user-authored commands, and `mcp.guard` protects MCP tool calls. An operation `guard` supplements its surface default; `{ mode: "override", run }` replaces only that default, while `"public"` removes only that default. Generated `api`, `rpc`, and `mcp call` commands run the target surface policy, never a synthetic CLI guard.
+
+For MCP over HTTP, `mcp.http.middleware` alone owns transport admission and request seeding. It returns either `{ kind: "respond", response }` or `{ kind: "next", locals }`. Those locals feed the MCP guard and tool guard. Stdio and local `mcp call` have no HTTP shortcut: guards derive callers from the exclusive local environment source.
+
+Standalone apps can be composed by exact mount key:
+
+```typescript
+const suite = argsbarg({
+  ...suiteMetadata,
+  children: {
+    billing: { app: billingApp },
+    reports: { app: reportsApp, expose: ["cli", "mcp"] },
+  },
+});
+```
+
+Children are immutable build-time snapshots under parent-owned transports. Keys namespace CLI paths, REST paths and operation IDs, RPC methods, MCP tools, and scoped `ENV_`/header credential names. Child guards and hooks stay attached; parent surface defaults and hooks do not apply to child declarations. This does not merge child processes, listeners, lifecycle, OAuth, Tasks, stores, or runtime bundles.
 
 ## Templates
 
-`argsbarg create` copies a template, fills in the key, release repo, and description (`src/create-identity.ts`), installs dependencies, runs `just test`, and makes an initial commit when the target isn't already in a git work tree. Check an existing tree with `npx argsbarg create --check .`.
+```bash
+npx argsbarg@latest create my-app
+npx argsbarg@latest create my-app --template api --yes
+```
 
-| Template | Distribution | Shows |
-| --- | --- | --- |
-| **cli** (default) | npm / `npx` | All built-ins; options and flags only |
-| **api** | npm / `npx` | Zod `inputSchema`/`outputSchema`, REST CRUD, `node:sqlite` |
-| **agent-plugin** | Claude Code / Cursor plugin | A committed single-file Node bundle (esbuild) |
-| **homebrew** | Homebrew tap | A Bun-compiled binary and formula ([guide](examples/homebrew/docs/distribution.md)) |
+The package includes `cli`, `api`, `agent-plugin`, and `homebrew` templates plus single-file examples.
 
-Every template ships `AGENTS.md` (argsbarg authoring rules for agents), `CLAUDE.md`, and `skills/<key>/SKILL.md`. Templates and small demos (`examples/minimal.ts`, `nested.ts`, `formats.ts`, `servers.ts`) ship in the package under `node_modules/argsbarg/examples/`.
-
-## Concepts
-
-- **Tree** — the app root and **command groups** have `commands`; **commands** have a `handler`. A group may set `fallbackCommand` / `fallbackMode` for default routing. Build every command with `command({ … })` so `ctx.inputs`, `ctx.pathParams`, and return values are typed.
-- **Options** — POSIX style (`-v`, `--name value`, `--name=value`, bundled `-abc`, `--` separator); kinds `Presence`, `String`, `Number`, `Enum`, `Json`; string `format`s `duration`, `comma-list`, `date`, `date-time`.
-- **Positionals** — `argMin` / `argMax` (`argMax: 0` is an unbounded tail).
-- **Reading values** — `ctx.inputs` (coerced and, with `inputSchema`, Zod-parsed), plus `ctx.hasFlag`, `ctx.stringOpt`, `ctx.durationOpt`, `ctx.positional`, `ctx.args`, `ctx.invocation` (`cli` / `http` / `mcp`).
-- **Errors** — `cliErrWithHelp(ctx, msg)` prints the message and scoped help and exits 1 on the CLI; on HTTP/MCP it throws.
-- **Hooks** — `hooks.beforeInvoke`, `afterInvoke`, `formatError`, and `onError` run around user commands on every surface.
-
-### Fallback modes (`FallbackMode`)
-
-| Mode | Empty argv | Unknown first token |
-| --- | --- | --- |
-| `MissingOnly` | Default command | Error |
-| `MissingOrUnknown` | Default command | Default command (token becomes its argv) |
-| `UnknownOnly` | Help (exit 1) | Default command |
-
-### Built-ins
-
-Injected at runtime, not declared in your tree. Don't declare root commands with these names:
-
-| Command | When |
-| --- | --- |
-| `version` | Always |
-| `completion bash\|zsh\|fish` | Always (disable with `completion: { enabled: false }`) |
-| `http` | `httpServer.enabled: true` — see [http-server.md](docs/http-server.md) |
-| `mcp`, `mcp bundle` | `mcpServer.enabled: true` — see [mcp.md](docs/mcp.md) |
+The package also ships two authoring skills. `argsbarg-bootstrap` creates a new app from an intent-first scaffold request; `argsbarg-upsert` adds, removes, pivots, or upgrades independent CLI, REST, JSON-RPC, and MCP capabilities in scaffolded or external apps. All four templates include `argsbarg-upsert`.
 
 ## Documentation
 
-The guides ship in the package under `node_modules/argsbarg/docs/`.
-
-| If you are… | Read |
-| --- | --- |
-| **Authoring an app** (humans or agents) | [cli-program.md](docs/cli-program.md) — the authoritative guide: commands, options, formats, hooks, headless handlers |
-| **Writing schemas** | [schemas.md](docs/schemas.md) — Zod 4 `inputSchema` / `outputSchema`, JSON stdout |
-| **Exposing MCP tools** | [mcp.md](docs/mcp.md) — stdio server, tool schemas, plugins and bundles, client setup |
-| **Running the HTTP server** | [http-server.md](docs/http-server.md) — routes, endpoints, responses |
-| **Server logging** | [logging.md](docs/logging.md) — ECS JSON lines, `enrich`, `serialize`, trace headers |
-| **Maintaining argsbarg** | [developing.md](docs/developing.md) — tooling, release, upgrade notes |
-| **Why things are the way they are** | [decisions.md](docs/decisions.md) — design decisions and why |
-
-## License
-
-MIT
+- [Authoring CLI, guards, and invocation](docs/cli-program.md)
+- [Zod schemas](docs/schemas.md)
+- [REST](docs/http-server.md)
+- [MCP](docs/mcp.md)
+- [Server logging](docs/logging.md)
+- [Use cases](docs/use-cases/README.md)
+- [Development](docs/developing.md)
+- [Design decisions](docs/decisions.md)

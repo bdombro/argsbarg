@@ -4,6 +4,7 @@ Status leaf — demonstrates outputSchema.
 
 import { command, OptionKind } from "argsbarg";
 import { z } from "zod";
+import pkg from "../../../package.json" with { type: "json" };
 
 /** JSON stdout for `example-api status --json`. */
 export const StatusJsonOutput = z.strictObject({
@@ -13,7 +14,7 @@ export const StatusJsonOutput = z.strictObject({
 /** `status --json` payload. */
 export type StatusJsonOutput = z.infer<typeof StatusJsonOutput>;
 
-/** Prints the app version (JSON with `--json`). */
+/** Prints `version=<version>`, or the version object with `--json`. */
 export const statusCommand = command({
   key: "status",
   description: "Show app version.",
@@ -25,13 +26,12 @@ export const statusCommand = command({
     },
   ],
   outputSchema: StatusJsonOutput,
-  handler: (ctx) => {
-    const out: StatusJsonOutput = { version: ctx.spec.version };
-    if (ctx.invocation !== "cli") return out;
-    if (ctx.hasFlag("json")) {
-      console.log(JSON.stringify(out, null, 2));
-    } else {
-      console.log(`version=${out.version}`);
+  handler: ({ inputs }) => {
+    const output = { version: pkg.version };
+    if (!inputs.json) {
+      console.log(`version=${output.version}`);
+      return;
     }
+    return output;
   },
 });

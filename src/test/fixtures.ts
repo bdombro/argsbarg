@@ -1,85 +1,10 @@
 import { spawnSync } from "node:child_process";
 import type { AppSpec } from "../core/types.ts";
 import { FallbackMode, OptionKind } from "../core/types.ts";
-import type { McpToolDef } from "../mcp/tools.ts";
 
 export function testProgram(prog: Record<string, unknown> & { key: string; description: string }): AppSpec {
   return { version: "0.0.0", ...prog } as AppSpec;
 }
-
-/** MCP tool with `name` from `collectMcpTools`, or throw. */
-export function requireMcpTool(
-  /** Tools from `collectMcpTools`. */
-  tools: McpToolDef[],
-  /** MCP tool name to find. */
-  name: string,
-): McpToolDef {
-  const tool = tools.find((t) => t.name === name);
-  if (!tool) throw new Error(`expected MCP tool ${name}`);
-  return tool;
-}
-
-export const nestedMcpFixture = testProgram({
-  key: "nested.ts",
-  description: "Nested groups demo.",
-  version: "1.0.0",
-  mcpServer: { enabled: true },
-  commands: [
-    {
-      key: "stat",
-      description: "File metadata.",
-      commands: [
-        {
-          key: "owner",
-          description: "Ownership helpers.",
-          commands: [
-            {
-              key: "lookup",
-              description: "Resolve owner info.",
-              options: [
-                {
-                  name: "user-name",
-                  description: "User to look up.",
-                  kind: OptionKind.String,
-                  shortName: "u",
-                },
-              ],
-              positionals: [
-                {
-                  name: "path",
-                  description: "File or directory.",
-                  kind: OptionKind.String,
-                },
-              ],
-              handler: () => {},
-            },
-          ],
-        },
-      ],
-    },
-    {
-      key: "read",
-      description: "Print the first line of each file.",
-      positionals: [
-        {
-          name: "files",
-          description: "Paths to read.",
-          kind: OptionKind.String,
-          argMax: 0,
-        },
-      ],
-      handler: () => {},
-    },
-    {
-      key: "hidden",
-      description: "Internal debug.",
-      mcpTool: { enabled: false },
-      handler: () => {},
-    },
-  ],
-  fallbackCommand: "read",
-  fallbackMode: FallbackMode.MissingOrUnknown,
-});
 
 /** Output of a finished child process. */
 export interface RunResult {
@@ -129,28 +54,6 @@ export async function mcpRequest(
   }
   return byId;
 }
-
-export const enumMcpFixture = testProgram({
-  key: "app",
-  description: "",
-  mcpServer: { enabled: true },
-  commands: [
-    {
-      key: "run",
-      description: "Run with mode.",
-      options: [
-        {
-          name: "mode",
-          description: "Mode.",
-          kind: OptionKind.Enum,
-          choices: ["dev", "prod"],
-          required: true,
-        },
-      ],
-      handler: () => {},
-    },
-  ],
-});
 
 export function varargsReadFixture(): AppSpec {
   return testProgram({

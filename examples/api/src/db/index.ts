@@ -3,7 +3,7 @@ App-wide in-memory SQLite database.
 */
 
 import { DatabaseSync } from "node:sqlite";
-import type { InvokeHookContext, ReadinessContext } from "argsbarg";
+import type { InvokeHookContext } from "argsbarg";
 import { migrate } from "./migrate.ts";
 import { WorkspacesTable } from "./tables/workspaces.ts";
 
@@ -68,23 +68,13 @@ export class AppDb {
    * Wire `ctx.locals.db` before handlers run.
    * Server runtimes open with retry into `runtime.state.db`; CLI uses {@link openDb}.
    */
-  static attach(
-    ctx: Pick<InvokeHookContext, "locals" | "invocation"> & { runtime?: InvokeHookContext["runtime"] },
-  ): void {
-    if (ctx.runtime && (ctx.invocation === "http" || ctx.invocation === "mcp")) {
-      ctx.runtime.state.db ??= AppDb.openWithRetry();
-      ctx.locals.db = ctx.runtime.state.db;
-      return;
-    }
+  static attach(ctx: Pick<InvokeHookContext, "locals">): void {
     ctx.locals.db = AppDb.openDb();
   }
 
-  /** Readiness probe: ping `runtime.state.db` when the server database is open. */
-  static checkReadiness(ctx: ReadinessContext): boolean {
-    const appDb = ctx.runtime.state.db;
-    if (!appDb) {
-      return false;
-    }
+  /** Readiness probe: ping the app-owned process-local database. */
+  static checkReadiness(): boolean {
+    const appDb = AppDb.openDb();
     try {
       appDb.ping();
       return true;

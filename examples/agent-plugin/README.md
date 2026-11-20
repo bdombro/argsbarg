@@ -6,10 +6,10 @@ Argsbarg MCP plugin template for Cursor and Claude Code marketplaces (Zod schema
 
 `example-agent-plugin` packages an MCP server and agent skills directly for Cursor and Claude Code marketplaces:
 
-- **Cursor Plugin**: inline MCP configuration in `.cursor-plugin/plugin.json` runs `node ${CURSOR_PLUGIN_ROOT}/dist/example-agent-plugin.mjs mcp`.
-- **Claude Code Plugin**: inline MCP configuration in `.claude-plugin/plugin.json` runs `node ${CLAUDE_PLUGIN_ROOT}/dist/example-agent-plugin.mjs mcp`.
+- **Cursor Plugin**: inline MCP configuration runs the committed bundle with `serve mcp --stdio`.
+- **Claude Code Plugin**: inline MCP configuration uses the same v9 stdio launch.
 - **In-repo skills**: `skills/example-agent-plugin/SKILL.md` discovered and loaded by agent platforms.
-- **Committed Node bundle**: `dist/example-agent-plugin.mjs` is self-contained (dependencies and schemas bundled), so a fresh clone runs with no install step.
+- **Committed Node bundle**: `dist/example-agent-plugin.mjs` is self-contained (dependencies and schemas bundled), so a fresh clone runs with no install step. `dist/example-agent-plugin` is the extensionless executable copy consumed by MCP packaging.
 
 ## Installation
 
@@ -44,7 +44,7 @@ Once merged into [anthropics/claude-plugins-official](https://github.com/anthrop
 ### Built-in commands
 
 - `example-agent-plugin completion` — Print shell tab-completion scripts (bash, zsh, fish).
-- `example-agent-plugin mcp` — Start the Model Context Protocol (stdio) server for AI coding agents.
+- `example-agent-plugin serve mcp --stdio` — Start the Model Context Protocol (stdio) server for AI coding agents.
 - `example-agent-plugin version` — Display version information.
 
 ## Contributing / Local Development
@@ -58,7 +58,7 @@ just test
 
 # Rebuild the committed Node bundle and run the MCP server from it
 just build
-node dist/example-agent-plugin.mjs mcp
+./dist/example-agent-plugin.mjs serve mcp --stdio
 
 # Link into local Cursor plugins for live testing
 just plugin-cursor-upsert
@@ -67,5 +67,5 @@ just plugin-cursor-upsert
 just plugin-claude-install
 ```
 
-Restart Claude Code after installing. Use `node src/index.ts <command>` for CLI commands from source. Commit `dist/example-agent-plugin.mjs` whenever source changes (`just build`). Release with `just release <major|minor|patch>` (no prompt; commits all changes, tags, pushes and creates the GitHub release).
+Restart Claude Code after installing. Use `node src/index.ts <command>` for CLI commands from source. Commit the executable `dist/example-agent-plugin.mjs` and packaging copy `dist/example-agent-plugin` whenever source changes (`just build`). Release with `just release <major|minor|patch>` (no prompt; commits all changes, tags, pushes and creates the GitHub release).
 

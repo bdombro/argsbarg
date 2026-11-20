@@ -1,8 +1,8 @@
 /*
-Workspaces CRUD — demonstrates REST verbs, :id param routers, ctx.pathParams, and typed ctx.inputs bodies.
+Workspace CLI declarations with flat path values and typed Zod inputs.
 */
 
-import { type AppSpec, type CommandGroup, cliErrWithHelp, command } from "argsbarg";
+import { AppError, type AppSpec, type CommandGroup, command } from "argsbarg";
 import { z } from "zod";
 
 /** Body for workspace create/replace/patch. */
@@ -18,8 +18,8 @@ export const WorkspaceIdParams = z.strictObject({
   id: z.string().describe("Workspace id (from `workspaces post` or `workspaces get`)."),
 });
 
-function notFound(ctx: Parameters<typeof cliErrWithHelp>[0], id: string): never {
-  cliErrWithHelp(ctx, `Workspace not found: ${id}`);
+function notFound(id: string): never {
+  throw new AppError(`Workspace not found: ${id}`, { code: "WORKSPACE_NOT_FOUND", httpStatus: 404 });
 }
 
 export const workspacesCommand = {
@@ -49,10 +49,10 @@ export const workspacesCommand = {
           pathParams: WorkspaceIdParams,
           description: "Get one workspace.",
           handler: (ctx) => {
-            const id = ctx.pathParams.id;
+            const id = ctx.inputs.id;
             const ws = ctx.locals.db.workspaces.get(id);
             if (!ws) {
-              notFound(ctx, id);
+              notFound(id);
             }
             return ws;
           },
@@ -63,11 +63,11 @@ export const workspacesCommand = {
           description: "Replace a workspace.",
           inputSchema: WorkspaceNameInput,
           handler: (ctx) => {
-            const id = ctx.pathParams.id;
+            const id = ctx.inputs.id;
             const { name } = ctx.inputs;
             const ws = ctx.locals.db.workspaces.replace(id, name);
             if (!ws) {
-              notFound(ctx, id);
+              notFound(id);
             }
             return ws;
           },
@@ -78,11 +78,11 @@ export const workspacesCommand = {
           description: "Patch a workspace name.",
           inputSchema: WorkspaceNameInput,
           handler: (ctx) => {
-            const id = ctx.pathParams.id;
+            const id = ctx.inputs.id;
             const { name } = ctx.inputs;
             const ws = ctx.locals.db.workspaces.patch(id, name);
             if (!ws) {
-              notFound(ctx, id);
+              notFound(id);
             }
             return ws;
           },
@@ -92,11 +92,11 @@ export const workspacesCommand = {
           pathParams: WorkspaceIdParams,
           description: "Delete a workspace.",
           handler: (ctx) => {
-            const id = ctx.pathParams.id;
+            const id = ctx.inputs.id;
             if (!ctx.locals.db.workspaces.delete(id)) {
-              notFound(ctx, id);
+              notFound(id);
             }
-            ctx.respond({ status: 204, body: "" });
+            return { deleted: id };
           },
         }),
       ],

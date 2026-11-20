@@ -4,6 +4,7 @@ Status leaf — demonstrates outputSchema.
 
 import { command, OptionKind } from "argsbarg";
 import { z } from "zod";
+import pkg from "../../../package.json" with { type: "json" };
 
 /** JSON stdout for `example-agent-plugin status --json`. */
 export const StatusJsonOutput = z.strictObject({
@@ -25,12 +26,5 @@ export const statusCommand = command({
     },
   ],
   outputSchema: StatusJsonOutput,
-  handler: (ctx) => {
-    const out: StatusJsonOutput = { version: ctx.spec.version };
-    if (ctx.hasFlag("json")) {
-      console.log(JSON.stringify(out, null, 2));
-    } else {
-      console.log(`version=${out.version}`);
-    }
-  },
+  handler: () => ({ version: pkg.version }),
 });

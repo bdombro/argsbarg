@@ -21,8 +21,8 @@ const configFixture: AppSpec = {
   key: "myapp",
   version: "1.0.0",
   description: "Demo.",
-  mcpServer: {
-    enabled: true,
+  mcp: {
+    tools: [],
     bundle: {
       author: { name: "Author", email: "author@example.com" },
       displayName: "My Application",
@@ -59,7 +59,7 @@ describe("cursor plugin", () => {
     const entry = servers.myapp;
     assert.notEqual(entry, undefined);
     assert.equal(entry?.command, "${CURSOR_PLUGIN_ROOT}/bin/myapp");
-    assert.deepEqual(entry?.args, ["mcp"]);
+    assert.deepEqual(entry?.args, ["serve", "mcp", "--stdio"]);
     assert.equal(entry?.env, undefined);
   });
 

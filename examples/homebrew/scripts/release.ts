@@ -17,7 +17,6 @@ import {
 const { key } = createIdentity;
 const formulaPath = `Formula/${key}.rb`;
 const binaryPath = `dist/${key}`;
-const programPath = "src/app.ts";
 
 /** Allowed semver bump kinds for `scripts/release.ts`. */
 type Bump = "major" | "minor" | "patch";
@@ -140,22 +139,17 @@ async function createGithubRelease(tag: string, archivePath: string): Promise<vo
   await $`gh release create ${tag} ${archivePath} --title ${tag} --generate-notes`;
 }
 
-/** Reads the CLI version from `src/app.ts`. */
+/** Reads the CLI version from `package.json`. */
 function readCurrentVersion(): string {
-  const content = fs.readFileSync(programPath, "utf-8");
-  const match = /version:\s*"([^"]+)"/.exec(content);
-  if (!match) {
-    process.stderr.write(`Could not read version from ${programPath}\n`);
+  const pkg = JSON.parse(fs.readFileSync("package.json", "utf8")) as { version?: unknown };
+  if (typeof pkg.version !== "string") {
+    process.stderr.write("Could not read version from package.json\n");
     process.exit(1);
   }
-  const version = match[1];
-  if (!version) {
-    process.stderr.write(`Could not read version from ${programPath}\n`);
-    process.exit(1);
-  }
+  const { version } = pkg;
   const parts = version.split(".").map(Number);
   if (parts.length !== 3 || parts.some(Number.isNaN)) {
-    process.stderr.write(`Invalid semver in ${programPath}: ${version}\n`);
+    process.stderr.write(`Invalid semver in package.json: ${version}\n`);
     process.exit(1);
   }
   return version;
@@ -172,10 +166,11 @@ function updateChangelog(newVersion: string): void {
   );
 }
 
-/** Overwrites the version literal in `src/app.ts`. */
+/** Writes the next CLI version to `package.json`. */
 function updateVersion(newVersion: string): void {
-  const content = fs.readFileSync(programPath, "utf-8");
-  fs.writeFileSync(programPath, content.replace(/version:\s*"[^"]+"/, `version: "${newVersion}"`));
+  const pkg = JSON.parse(fs.readFileSync("package.json", "utf8")) as { version: string };
+  pkg.version = newVersion;
+  fs.writeFileSync("package.json", `${JSON.stringify(pkg, null, 2)}\n`);
 }
 
 /** Writes the release formula with zip URL and archive sha256; returns the archive path. */

@@ -7,7 +7,6 @@ import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFil
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import type { AppSpec } from "../../core/types.ts";
-import { mcpServerId } from "../tools.ts";
 import { defaultMcpBundlePaths, type PackMcpBundleOpts } from "./bundle.ts";
 import { collectZipEntries, defaultAuthor, pluginName, stagePluginSkills } from "./shared.ts";
 import { zipStore } from "./zip.ts";
@@ -42,7 +41,7 @@ export function generateCursorPluginManifest(
   /** Staged executable name. */
   _binaryName: string,
 ): Record<string, unknown> {
-  const bundle = program.mcpServer?.bundle;
+  const bundle = program.mcp?.bundle;
   const manifest: Record<string, unknown> = {
     name: pluginName(program),
     version: program.version,
@@ -73,11 +72,11 @@ export function generateCursorPluginMcpJson(
 ): Record<string, unknown> {
   const mcp: Record<string, unknown> = {
     command: `\${CURSOR_PLUGIN_ROOT}/bin/${binaryName}`,
-    args: ["mcp"],
+    args: ["serve", "mcp", "--stdio"],
   };
   return {
     mcpServers: {
-      [mcpServerId(program)]: mcp,
+      [program.key.replace(/[^a-zA-Z0-9]/g, "_")]: mcp,
     },
   };
 }

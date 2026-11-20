@@ -16,7 +16,7 @@ const configFixture: AppSpec = {
   key: "myapp",
   version: "1.0.0",
   description: "Demo.",
-  mcpServer: { enabled: true },
+  mcp: { tools: [] },
   commands: [{ key: "run", description: "Run.", handler: () => {} }],
 };
 
@@ -37,7 +37,7 @@ describe("claude plugin", () => {
     const json = generatePluginMcpJson(configFixture, "myapp");
     const entry = json.myapp as { command: string; args: string[]; env?: Record<string, string> };
     assert.equal(entry.command, "${CLAUDE_PLUGIN_ROOT}/bin/myapp");
-    assert.deepEqual(entry.args, ["mcp"]);
+    assert.deepEqual(entry.args, ["serve", "mcp", "--stdio"]);
     assert.equal(entry.env, undefined);
   });
 

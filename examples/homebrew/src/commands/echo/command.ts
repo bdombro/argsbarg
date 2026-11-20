@@ -4,7 +4,7 @@ Echo leaf — minimal MCP-friendly command; `ctx.inputs` is typed from the optio
 
 import { command, OptionKind } from "argsbarg";
 
-/** Prints (CLI) or returns (MCP/HTTP) the `message` option. */
+/** Returns the `message` option for CLI output. */
 export const echoCommand = command({
   key: "echo",
   description: "Echo a message (MCP-friendly leaf).",
@@ -18,10 +18,6 @@ export const echoCommand = command({
   ],
   handler: (ctx) => {
     const { message } = ctx.inputs;
-    if (ctx.invocation === "cli") {
-      console.log(message);
-      return;
-    }
     return message;
   },
 });

@@ -17,7 +17,7 @@ Homebrew installs shell completions (`generate_completions_from_executable`). Up
 
 - `example-homebrew echo` — Echo text back to stdout or inspect flags.
 - `example-homebrew status` — Show application version with optional `--json`.
-- Built-ins: `completion`, `version`.
+- Capabilities: `completion`, `version`, explicit HTTP/RPC, and MCP.
 
 ## Development
 

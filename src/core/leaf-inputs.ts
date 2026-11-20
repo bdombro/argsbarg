@@ -3,13 +3,11 @@ Leaf input reads: Json options (flag, preloaded stdin, or toolArgs), optional Zo
 With an inputSchema, the schema's parsed output becomes ctx.inputs.
 */
 
-import type { z } from "zod";
-import type { CommandContext, CommandInputs } from "./context.ts";
-import { collectOptionDefs } from "./parse.ts";
-import type { AppSpec, Command, CommandOption, Invocation, RunnableCommand } from "./types.ts";
+import { parseCommaList, parseDate, parseDateTime, parseDurationMs } from "./formats.ts";
+import { collectPathOptionDefs } from "./parse.ts";
+import type { AppSpec, Command, Invocation, RunnableCommand } from "./types.ts";
 import { hasHandler, hasSubcommands, isDocumentCommand, OptionKind, ValueFormat } from "./types.ts";
-import { isInteractiveTty } from "./utils.ts";
-import { toJsonSchema, validateWithSchema } from "./zod-schema.ts";
+import { isInteractiveTty, strictParseDouble } from "./utils.ts";
 
 /** Thrown when leaf input resolution or validation fails. */
 export class InputError extends Error {
@@ -31,10 +29,6 @@ function resolveLeaf(program: AppSpec, commandPath: string[]): RunnableCommand |
     node = child;
   }
   return hasHandler(node) ? node : undefined;
-}
-
-function leafNode(ctx: CommandContext): RunnableCommand | undefined {
-  return resolveLeaf(ctx.spec, ctx.commandPath);
 }
 
 /** Parses a JSON string from a `--name` flag value. */
@@ -111,47 +105,84 @@ async function readPipedDocumentStdin(): Promise<unknown> {
   }
 }
 
-function pipableJsonHelp(opt: CommandOption): string {
-  return `Missing required option --${opt.name}: pass JSON via --${opt.name} '<json>' or pipe a JSON document to stdin`;
-}
+/** Coerces one parser-selected CLI leaf without running a Zod schema. */
+export function coerceCliLeafInputs(options: {
+  /** Validated/frozen app declaration used to resolve the selected leaf. */
+  readonly program: AppSpec;
+  /** Routed command path from the parser. */
+  readonly commandPath: readonly string[];
+  /** Parsed option text, including presence sentinels and post-parse defaults. */
+  readonly opts: Readonly<Record<string, string>>;
+  /** Positional CLI tokens after option parsing. */
+  readonly args: readonly string[];
+  /** JSON values already read from optional piped stdin. */
+  readonly preloadedJson?: Readonly<Record<string, unknown>>;
+  /** Raw path-router captures from the parser. */
+  readonly pathParams?: Readonly<Record<string, string>>;
+}): Record<string, unknown> {
+  const { program, commandPath, opts, args, preloadedJson = {}, pathParams = {} } = options;
+  const leaf = resolveLeaf(program, [...commandPath]);
+  if (leaf === undefined) throw new InputError("Internal error: missing command leaf");
+  if (isDocumentCommand(leaf)) {
+    let body: unknown;
+    if (args.length > 0) {
+      body = parseDocumentText(args[0] ?? "", "Document argument");
+    } else if (DOCUMENT_LEAF_BODY_KEY in preloadedJson) {
+      body = preloadedJson[DOCUMENT_LEAF_BODY_KEY];
+    } else {
+      throw new InputError(DOCUMENT_BODY_HELP);
+    }
+    if (typeof body !== "object" || body === null || Array.isArray(body)) {
+      throw new InputError("Document input must be a JSON object");
+    }
+    return { ...(body as Record<string, unknown>), ...pathParams };
+  }
 
-function omitUndefinedInputs(out: CommandInputs): Record<string, unknown> {
-  const stripped: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(out)) {
-    if (value !== undefined) {
-      stripped[key] = value;
+  const out: Record<string, unknown> = {};
+  for (const option of collectPathOptionDefs(program, [...commandPath])) {
+    const raw = opts[option.name];
+    if (option.kind === OptionKind.Presence) {
+      out[option.name] = raw !== undefined;
+      continue;
+    }
+    if (raw === undefined) continue;
+    if (option.kind === OptionKind.Number) {
+      const numeric = strictParseDouble(raw);
+      if (numeric === null) throw new InputError(`--${option.name}: invalid number`);
+      out[option.name] = numeric;
+    } else if (option.kind === OptionKind.Json) {
+      out[option.name] = parseJsonText(raw, `--${option.name}`);
+    } else if (option.format === ValueFormat.Duration) {
+      out[option.name] = parseDurationMs(raw);
+    } else if (option.format === ValueFormat.CommaList) {
+      out[option.name] = parseCommaList(raw);
+    } else if (option.format === ValueFormat.Date) {
+      out[option.name] = parseDate(raw);
+    } else if (option.format === ValueFormat.DateTime) {
+      out[option.name] = parseDateTime(raw);
+    } else {
+      out[option.name] = raw;
     }
   }
-  return stripped;
-}
+  for (const option of collectPathOptionDefs(program, [...commandPath])) {
+    if (option.kind === OptionKind.Json && option.name in preloadedJson && !(option.name in out)) {
+      out[option.name] = preloadedJson[option.name];
+    }
+  }
 
-/** Validates collected inputs against the leaf's Zod `inputSchema` and returns the parsed value. */
-function validateAgainstInputSchema(
-  /** Collected leaf inputs (undefined values are dropped before validation). */
-  out: CommandInputs,
-  /** Leaf `inputSchema`. */
-  inputSchema: z.ZodType,
-): unknown {
-  const result = validateWithSchema(inputSchema, omitUndefinedInputs(out));
-  if (!result.valid) {
-    throw new InputError(result.errors.join("; "));
+  let index = 0;
+  for (const slot of leaf.positionals ?? []) {
+    const { argMax = 1 } = slot;
+    if (argMax === 0) {
+      out[slot.name] = args.slice(index);
+      index = args.length;
+    } else {
+      const value = args[index];
+      if (value !== undefined) out[slot.name] = value;
+      index += 1;
+    }
   }
-  return result.value;
-}
-
-/** Resolves a Json option from argv, preloaded stdin, or toolArgs (flag wins). */
-export function readJsonOptionValue(ctx: CommandContext, name: string): unknown | undefined {
-  const flagValue = ctx.stringOpt(name);
-  if (flagValue !== undefined) {
-    return parseJsonText(flagValue, `--${name}`);
-  }
-  if (name in ctx.preloadedJson) {
-    return ctx.preloadedJson[name];
-  }
-  if (ctx.toolArgs !== undefined && name in ctx.toolArgs) {
-    return ctx.toolArgs[name];
-  }
-  return undefined;
+  return { ...out, ...pathParams };
 }
 
 /**
@@ -174,156 +205,10 @@ export async function preloadPipableJson(
     return { [DOCUMENT_LEAF_BODY_KEY]: await readPipedDocumentStdin() };
   }
 
-  for (const opt of collectOptionDefs(program, commandPath)) {
+  for (const opt of collectPathOptionDefs(program, commandPath)) {
     if (opt.kind === OptionKind.Json && opt.pipable && !(opt.name in opts)) {
       return { [opt.name]: await readPipedJsonStdin() };
     }
   }
   return {};
-}
-
-function readSyncOptionValue(
-  ctx: CommandContext,
-  opt: CommandOption,
-): boolean | number | string | string[] | unknown | undefined {
-  if (opt.kind === OptionKind.Presence) {
-    return ctx.hasFlag(opt.name);
-  }
-  if (opt.kind === OptionKind.Number) {
-    const n = ctx.numberOpt(opt.name);
-    return n === null ? undefined : n;
-  }
-  if (opt.kind === OptionKind.Json) {
-    return readJsonOptionValue(ctx, opt.name);
-  }
-  if (opt.format !== undefined) {
-    if (opt.format === ValueFormat.Duration) {
-      return ctx.durationOpt(opt.name);
-    }
-    if (opt.format === ValueFormat.CommaList) {
-      return ctx.commaListOpt(opt.name);
-    }
-    if (opt.format === ValueFormat.Date) {
-      return ctx.dateOpt(opt.name);
-    }
-    if (opt.format === ValueFormat.DateTime) {
-      return ctx.dateTimeOpt(opt.name);
-    }
-  }
-  return ctx.stringOpt(opt.name);
-}
-
-/**
- * Loads coerced leaf inputs and validates against `leaf.inputSchema` when set.
- * Used by {@link CommandContext.inputs}; handlers read `ctx.inputs`.
- */
-export function loadLeafInputs(ctx: CommandContext): unknown {
-  const leaf = leafNode(ctx);
-  if (!leaf) return {};
-
-  if (isDocumentCommand(leaf)) {
-    let body: unknown;
-    if (ctx.toolArgs !== undefined) {
-      body = ctx.toolArgs;
-    } else if (ctx.args.length > 0) {
-      const [arg0] = ctx.args;
-      if (arg0 === undefined) {
-        throw new InputError(DOCUMENT_BODY_HELP);
-      }
-      body = parseDocumentText(arg0, "Document argument");
-    } else if (DOCUMENT_LEAF_BODY_KEY in ctx.preloadedJson) {
-      body = ctx.preloadedJson[DOCUMENT_LEAF_BODY_KEY];
-    } else {
-      throw new InputError(DOCUMENT_BODY_HELP);
-    }
-    if (typeof body !== "object" || body === null || Array.isArray(body)) {
-      throw new InputError("Document input must be a JSON object");
-    }
-    const out = body as CommandInputs;
-    if (leaf.inputSchema !== undefined) {
-      return validateWithPathParams(out, leaf.inputSchema, ctx.rawPathParams);
-    }
-    return omitUndefinedInputs(out);
-  }
-
-  const out: CommandInputs = {};
-  const options = collectOptionDefs(ctx.spec, ctx.commandPath);
-
-  for (const opt of options) {
-    out[opt.name] = readSyncOptionValue(ctx, opt);
-  }
-
-  for (const p of leaf.positionals ?? []) {
-    const val = ctx.positional(p.name);
-    if (val === undefined) {
-      out[p.name] = undefined;
-    } else if (Array.isArray(val)) {
-      out[p.name] = val;
-    } else {
-      out[p.name] = val;
-    }
-  }
-
-  const pathOnly: Record<string, string> = {};
-  for (const [name, value] of Object.entries(ctx.rawPathParams)) {
-    if (out[name] === undefined) {
-      out[name] = value;
-      pathOnly[name] = value;
-    }
-  }
-
-  if (ctx.toolArgs !== undefined) {
-    for (const [key, value] of Object.entries(ctx.toolArgs)) {
-      if (out[key] === undefined) {
-        out[key] = value;
-      }
-    }
-  }
-
-  for (const opt of options) {
-    if (opt.required && out[opt.name] === undefined) {
-      if (opt.kind === OptionKind.Json && opt.pipable && ctx.invocation === "cli" && isInteractiveTty) {
-        throw new InputError(pipableJsonHelp(opt));
-      }
-      throw new InputError(`Missing required option: --${opt.name}`);
-    }
-  }
-
-  if (leaf.inputSchema !== undefined) {
-    return validateWithPathParams(out, leaf.inputSchema, pathOnly);
-  }
-
-  return omitUndefinedInputs(out);
-}
-
-/**
- * Validates inputs whose path parameters (`:id` routers) aren't declared by the schema: those keys are left out
- * of validation (they are URL segments, not body fields) and merged back into the parsed object afterwards.
- */
-function validateWithPathParams(
-  /** Collected leaf inputs, including path parameters. */
-  out: CommandInputs,
-  /** Leaf `inputSchema`. */
-  inputSchema: z.ZodType,
-  /** Path parameters that no option or positional supplied. */
-  pathOnly: Record<string, string>,
-): unknown {
-  const declared = toJsonSchema(inputSchema, "input").properties;
-  const undeclared = Object.keys(pathOnly).filter(
-    (name) => typeof declared !== "object" || declared === null || !(name in declared),
-  );
-  if (undeclared.length === 0) {
-    return validateAgainstInputSchema(out, inputSchema);
-  }
-  const body: CommandInputs = { ...out };
-  for (const name of undeclared) delete body[name];
-  const parsed = validateAgainstInputSchema(body, inputSchema);
-  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-    return parsed;
-  }
-  const merged: Record<string, unknown> = { ...parsed };
-  for (const name of undeclared) {
-    if (merged[name] === undefined) merged[name] = pathOnly[name];
-  }
-  return merged;
 }

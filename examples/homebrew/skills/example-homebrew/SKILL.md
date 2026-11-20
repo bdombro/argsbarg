@@ -36,5 +36,6 @@ example-homebrew <subcommand> [options] [args]
 
 ## Install location
 
+- The app enables local HTTP, JSON-RPC, and MCP service declarations in addition to the CLI.
 
 - **Manual:** copy or symlink `skills/example-homebrew/` into your agent's skill directory (for example `~/.agents/skills/example-homebrew/` or `~/.claude/skills/example-homebrew/`).

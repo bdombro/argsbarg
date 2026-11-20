@@ -1,38 +1,46 @@
 /*
-This entrypoint re-exports the public API and keeps the runtime split into modules.
-It gathers the package surface in one place while the actual execution flow lives in
-focused files for parsing, help, validation, completion, and runtime dispatch.
-
-It gives consumers one stable import path without forcing them to know the internal
-module layout. It is the package's only entry point: every public type is exported here explicitly.
+The package's single public entry point.
+It exposes the v9 declaration builders, invocation contracts, configuration helper,
+runtime factory, and distribution tools.
 */
 
 export type { SchemaExport } from "./builtins/export.ts";
-export type { CommandInputs } from "./core/context.ts";
-export { CommandContext } from "./core/context.ts";
-export {
-  parseCommaList,
-  parseDate,
-  parseDateTime,
-  parseDurationMs,
-} from "./core/formats.ts";
+export { resolveConfigDir } from "./core/config-dir.ts";
+export { AppError } from "./core/errors.ts";
 export {
   InputError,
   parseDocumentText,
   preloadPipableJson,
-  readJsonOptionValue,
 } from "./core/leaf-inputs.ts";
+export type {
+  Denial,
+  Guard,
+  GuardResult,
+  InvocationBase,
+  InvocationContext,
+  InvocationSource,
+  MaybePromise,
+  NameView,
+  OperationGuard,
+  Surface,
+} from "./core/invocation.ts";
+export { allow, deny } from "./core/invocation.ts";
 export type { SchemaRootExport } from "./core/schema.ts";
 export type {
   AppHooks,
   AppSpec,
   AppSpecFields,
+  ChildAppMount,
+  ChildSurface,
+  CliAppConfig,
   CliExposureConfig,
   ClientErrorOverride,
   Command,
   CommandBase,
   CommandDef,
   CommandGroup,
+  CommandHandlerContext,
+  CommandInputs,
   CommandInputsOf,
   CommandKind,
   CommandOption,
@@ -44,33 +52,20 @@ export type {
   CommandResultOf,
   CompletionConfig,
   ErrorHookContext,
-  HttpExposureConfig,
+  HttpAppConfig,
   HttpMethod,
-  HttpResponseConfig,
-  HttpServerConfig,
   HttpWireContext,
   HttpWireHooks,
-  Invocation,
   InvokeFailureKind,
   InvokeHookContext,
   InvokeHookResult,
+  JsonRpcAppConfig,
   JsonSchema,
   Locals,
   LogConfig,
+  McpAppConfig,
   McpBundleConfig,
-  McpResource,
-  McpServerConfig,
-  McpServerErrorsConfig,
-  McpSizeLimits,
-  McpToolConfig,
-  McpWireContext,
-  McpWireHooks,
-  ReadinessContext,
-  RespondBody,
-  RespondOptions,
   RunnableCommand,
-  ServerRuntime,
-  ServerState,
 } from "./core/types.ts";
 export {
   command,
@@ -82,25 +77,30 @@ export {
 } from "./core/types.ts";
 export { isInteractiveTty } from "./core/utils.ts";
 export { schemaStrictnessWarnings } from "./core/validate.ts";
-export { buildCommandInputSchema, commandWireOptions } from "./core/wire-schema.ts";
-export type { HeadlessContext } from "./headless/routing.ts";
-export {
-  formatDryRunMessage,
-  requireYesInNonTty,
-  shouldRunHeadless,
-  shouldRunHeadlessWithPositionals,
-  shouldRunHeadlessWithYes,
-  wantsExplicitJson,
-} from "./headless/routing.ts";
-export { generateOpenApi, openApiJson } from "./http/openapi.ts";
-export { handleApiRequest, httpServeHttp, resolveHttpListenAddress } from "./http/server.ts";
-export type { EcsLogEvent, EcsLogLevel, EcsServiceFields, FormatEcsLineOpts, LogEnrichContext } from "./log/ecs.ts";
-export { ECS_VERSION, formatEcsLine } from "./log/ecs.ts";
-export type { LogEmitterOpts, ResolvedLogConfig } from "./log/emitter.ts";
-export type { ErrorReporter, ErrorReporterOptions, ErrorReportLevel } from "./log/error-report.ts";
-export { createErrorReporter } from "./log/error-report.ts";
-export type { McpGatewayApp, McpGatewayEntry } from "./mcp/gateway.ts";
-export { mcpGatewayServe } from "./mcp/gateway.ts";
+export type {
+  HttpNativeRouteDeclaration,
+  HttpRouteDeclaration,
+  HttpRouteResponse,
+  HttpRouteResponseDefaults,
+  HttpRouteSpec,
+} from "./http/routes.ts";
+export { route } from "./http/routes.ts";
+export type {
+  JsonRpcMethod,
+  JsonRpcMethodSpec,
+  JsonRpcResultOf,
+} from "./json-rpc/declaration.ts";
+export { method } from "./json-rpc/declaration.ts";
+export type {
+  McpHttpConfig,
+  McpHttpMiddleware,
+  McpHttpMiddlewareContext,
+  McpHttpMiddlewareResult,
+} from "./mcp/http.ts";
+export type {
+  McpToolSpec,
+} from "./mcp/registry.ts";
+export { tool } from "./mcp/registry.ts";
 export type { McpBundlePaths, PackMcpBundleOpts } from "./mcp/pack/bundle.ts";
 export { defaultMcpBundlePaths, generateMcpManifest, packMcpBundle } from "./mcp/pack/bundle.ts";
 export {
@@ -115,9 +115,15 @@ export {
   generateCursorPluginMcpJson,
   packCursorPlugin,
 } from "./mcp/pack/cursor.ts";
-export type { McpSizeReport, McpToolSize } from "./mcp/tools.ts";
-export { DEFAULT_MCP_SIZE_LIMITS, mcpSizeReport } from "./mcp/tools.ts";
-export type { Capabilities } from "./runtime/capabilities.ts";
-export { type App, argsbarg, cliErrWithHelp, type InvokeKind, type InvokeResult } from "./runtime/cli.ts";
-export type { ServerHandleContext } from "./server/context.ts";
-export type { ResolvedHttpServeConfig, ResolvedMcpServeConfig, ServeOverrides } from "./server/overrides.ts";
+export type {
+  EcsLogEvent,
+  EcsLogLevel,
+  EcsServiceFields,
+  FormatEcsLineOpts,
+  LogEnrichContext,
+} from "./log/ecs.ts";
+export { ECS_VERSION, formatEcsLine } from "./log/ecs.ts";
+export type { ResolvedLogConfig } from "./log/emitter.ts";
+export type { ErrorReporter, ErrorReporterOptions, ErrorReportLevel } from "./log/error-report.ts";
+export { createErrorReporter } from "./log/error-report.ts";
+export { type App, argsbarg, type CliInvokeResult } from "./runtime/cli.ts";

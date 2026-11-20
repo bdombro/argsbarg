@@ -1,6 +1,6 @@
 # example-agent-plugin
 
-Argsbarg Claude Code / Cursor MCP plugin with a committed single-file Node bundle. Distributed as a plugin (`.claude-plugin/`, `.cursor-plugin/`); the manifests launch `node dist/example-agent-plugin.mjs mcp`.
+Argsbarg Claude Code / Cursor MCP plugin with a committed executable Node bundle. Distributed as a plugin (`.claude-plugin/`, `.cursor-plugin/`); the manifests launch `dist/example-agent-plugin.mjs serve mcp --stdio` directly.
 
 ## Argsbarg authoring
 
@@ -14,8 +14,8 @@ When adding or changing commands, schemas, or MCP exposure:
 **Rules** (details are in the docs above; don't contradict them):
 
 - Reserved root commands: `completion`, `mcp`, `http`, `version`.
-- `argsbarg({ … })` builds the app in `src/app.ts`; `command({ … })` declares every command (typed `ctx.inputs` / `ctx.pathParams`). Give the root, commands, options, and positionals action-oriented `description`s.
-- Omit `mcpTool` unless a command is genuinely CLI-only (`enabled: false`) or hits an irreducible wire limit; fix the schema and headless path first.
+- `argsbarg({ … })` builds the app in `src/app.ts`; `command()`, `route()`, `method()`, and `tool()` declare independent surfaces.
+- Share schemas and domain functions rather than deriving wire endpoints from CLI argv.
 - String options: `format` / `default` / `pattern` per `cli-program.md`; use `ctx.inputs` for multi-flag commands.
 - Varargs (`argMax: 0`): space-separated on the CLI, a JSON array over MCP; never comma-split positionals.
 - App settings are app code (env vars or your own file); argsbarg doesn't manage them.
@@ -37,7 +37,7 @@ When adding or changing commands, schemas, or MCP exposure:
 | `src/index.ts` | Entry: `await app.run()` | Command handlers, business logic |
 | `src/app.ts` | App spec: `commands: […]` (alphabetical by key) | Command handlers, business logic |
 | `src/create-identity.ts` | Key, release repo, description (rewritten by `argsbarg create`) | Anything else |
-| `src/types/` | Module augmentations (`argsbarg.d.ts`: `Locals`, `ServerState`) | Runtime logic |
+| `src/types/` | Module augmentations (`argsbarg.d.ts`: `Locals`) | Runtime logic |
 | `src/db/` | `AppDb` (SQLite connect, migrate, domain access), `migrations/*.sql` | Command handlers |
 | `src/commands/<name>/` | One command: `command.ts` (with its Zod schemas), colocated `*.test.ts` | Shared helpers (lift them out) |
 | `scripts/` | Dev tooling (release) | Production command paths |
@@ -46,7 +46,7 @@ When adding or changing commands, schemas, or MCP exposure:
 
 - Node ≥ 22.18 and npm; no Bun required. [just](https://just.systems) runs the tasks.
 - `just setup`, `just check` (Biome + `tsc --noEmit`), `just test` (check + `node --test`), `just run …` (from source, type-stripped).
-- `just build` rebuilds the committed bundle `dist/example-agent-plugin.mjs` (esbuild). Plugins run it with `node` via inline manifest MCP configs; commit it with its source and never hand-edit it. stdout is the MCP protocol.
+- `just build` rebuilds the committed executable bundles `dist/example-agent-plugin.mjs` and `dist/example-agent-plugin` (the extensionless copy used by MCP packaging). Plugins launch the tracked `.mjs` artifact directly via inline manifests; commit generated artifacts with their source and never hand-edit them. stdout is the MCP protocol.
 - `just plugin-claude-install`, `just plugin-cursor-upsert` install this checkout locally.
 - Release: `just release <major|minor|patch>` (no prompt: tests, bumps, builds, commits all changes, tags, pushes, GitHub release).
 

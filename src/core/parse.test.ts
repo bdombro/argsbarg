@@ -7,14 +7,9 @@ import { test } from "node:test";
 import { completionBashScript, completionZshScript } from "../builtins/index.ts";
 import { cliPresentationRoot } from "../builtins/presentation.ts";
 import { argsbarg, FallbackMode, OptionKind } from "../index.ts";
-import { applyShellEnv } from "../mcp/env.ts";
-import { allMcpResources, collectMcpTools, mcpToolCallToArgv } from "../mcp/tools.ts";
 import { cliHelpRender } from "../runtime/help.ts";
 import {
-  enumMcpFixture,
   nestedDocsFallbackFixture,
-  nestedMcpFixture,
-  requireMcpTool,
   runNode,
   testProgram,
   varargsReadFixture,
@@ -866,13 +861,6 @@ test("schemaExport resolves {argsbarg:program} in consumer notes", () => {
   assert.equal(schema.commands[0].notes, "Run `myapp run` to start.");
 });
 
-test("Enum option inputSchema includes enum array", () => {
-  const tools = collectMcpTools(enumMcpFixture);
-  const run = requireMcpTool(tools, "run");
-  const schema = run.inputSchema as { properties: { mode: { enum?: string[] } } };
-  assert.deepEqual(schema.properties.mode.enum, ["dev", "prod"]);
-});
-
 test("cliValidateProgram rejects Enum with no choices", () => {
   const root = testProgram({
     key: "app",
@@ -891,100 +879,6 @@ test("cliValidateProgram rejects Enum with duplicate choices", () => {
     options: [{ name: "mode", description: "", kind: OptionKind.Enum, choices: ["a", "a"] }],
   });
   assert.throws(() => cliValidateProgram(root), /choices must be distinct/);
-});
-
-/** McpTool.description override wins without env suffix. */
-test("mcpTool.description override wins without env suffix", () => {
-  const root = testProgram({
-    key: "app",
-    description: "",
-    mcpServer: { enabled: true },
-    commands: [
-      {
-        key: "x",
-        description: "Leaf desc.",
-        mcpTool: { description: "custom" },
-        handler: () => {},
-      },
-    ],
-  });
-  const tools = collectMcpTools(root);
-  assert.equal(tools[0]?.description, "custom");
-});
-
-/** CliValidateProgram rejects duplicate mcpResources URIs. */
-test("cliValidateProgram rejects duplicate mcpResources URIs", () => {
-  const root = testProgram({
-    key: "app",
-    description: "",
-    mcpServer: {
-      enabled: true,
-      resources: [
-        { uri: "a://1", name: "a", load: () => "a" },
-        { uri: "a://1", name: "b", load: () => "b" },
-      ],
-    },
-    commands: [{ key: "x", description: "", handler: () => {} }],
-  });
-  assert.throws(() => cliValidateProgram(root), /URIs must be unique/);
-});
-
-test("cliValidateProgram rejects empty mcpServer", () => {
-  const root = testProgram({
-    key: "app",
-    description: "",
-    mcpServer: {} as { enabled: boolean },
-    handler: () => {},
-  });
-  assert.throws(() => cliValidateProgram(root), /mcpServer requires enabled: true/);
-});
-
-test("cliValidateProgram rejects empty httpServer", () => {
-  const root = testProgram({
-    key: "app",
-    description: "",
-    httpServer: {} as { enabled: boolean },
-    handler: () => {},
-  });
-  assert.throws(() => cliValidateProgram(root), /httpServer requires enabled: true/);
-});
-
-/** AllMcpResources includes custom resources. */
-test("allMcpResources includes custom resources", () => {
-  const root = testProgram({
-    key: "app",
-    description: "",
-    mcpServer: {
-      enabled: true,
-      resources: [{ uri: "test://x", name: "x", load: () => "body" }],
-    },
-    commands: [{ key: "leaf", description: "", handler: () => {} }],
-  });
-  const resources = allMcpResources(root);
-  assert.deepEqual(
-    resources.map((r) => r.uri),
-    ["test://x"],
-  );
-});
-
-/** ApplyShellEnv merges PATH and preserves host vars. */
-test("applyShellEnv merges PATH and preserves host vars", () => {
-  const origPath = process.env.PATH ?? "";
-  const origHome = process.env.HOME;
-  process.env.PATH = "/host/bin";
-  process.env.HOME = "host-home";
-  applyShellEnv({ PATH: "/shell/bin:/host/bin", HOME: "shell-home", NEWVAR: "yes" });
-  assert.equal(process.env.PATH?.startsWith("/shell/bin:"), true);
-  assert.ok(process.env.PATH.includes("/host/bin"));
-  assert.equal(process.env.HOME, "host-home");
-  assert.equal(process.env.NEWVAR, "yes");
-  process.env.PATH = origPath;
-  if (origHome === undefined) {
-    delete process.env.HOME;
-  } else {
-    process.env.HOME = origHome;
-  }
-  delete process.env.NEWVAR;
 });
 
 /** Enum completions list choices in bash script. */
@@ -1147,34 +1041,6 @@ test("varargs unknown flag errors", async () => {
   const result = await argsbarg(root).invoke(["read", "--unknown"]);
   assert.equal(result.kind, "error");
   assert.ok(result.stderr.includes("--unknown"));
-});
-
-test("mcpToolCallToArgv rejects comma-separated string for varargs", () => {
-  const tools = collectMcpTools(nestedMcpFixture);
-  const read = requireMcpTool(tools, "read");
-  const argv = mcpToolCallToArgv(nestedMcpFixture, read, { files: "a,b" });
-  assert.match((argv as { error: string }).error, /JSON array/);
-});
-
-test("mcpToolCallToArgv rejects bare string for varargs", () => {
-  const tools = collectMcpTools(nestedMcpFixture);
-  const read = requireMcpTool(tools, "read");
-  const argv = mcpToolCallToArgv(nestedMcpFixture, read, { files: "a" });
-  assert.match((argv as { error: string }).error, /JSON array/);
-});
-
-test("mcpToolCallToArgv array varargs unchanged", () => {
-  const tools = collectMcpTools(nestedMcpFixture);
-  const read = requireMcpTool(tools, "read");
-  const argv = mcpToolCallToArgv(nestedMcpFixture, read, { files: ["a", "b"] });
-  assert.deepEqual(argv, ["read", "a", "b"]);
-});
-
-test("mcpToolCallToArgv empty array varargs errors when required", () => {
-  const tools = collectMcpTools(nestedMcpFixture);
-  const read = requireMcpTool(tools, "read");
-  const argv = mcpToolCallToArgv(nestedMcpFixture, read, { files: [] });
-  assert.deepEqual(argv, { error: "Missing argument: files" });
 });
 
 // ── Skills ────────────────────────────────────────────────────────────────────

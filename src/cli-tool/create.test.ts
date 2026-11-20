@@ -45,6 +45,14 @@ describe("argsbarg create", () => {
     }
   });
 
+  test("ships the shared upsert skill in every rendered template", () => {
+    const shared = readFileSync(join(import.meta.dirname, "../../skills", "argsbarg-upsert", "SKILL.md"), "utf8");
+    for (const templateId of ["cli", "api", "agent-plugin", "homebrew"] as const) {
+      const skill = renderCreateTree(baseOpts({ templateId })).get("skills/argsbarg-upsert/SKILL.md");
+      assert.equal(skill, shared, templateId);
+    }
+  });
+
   test("drops argsbarg-dev-only lines outside the in-repo template", () => {
     const content = `setup:\n    bun install\n    ln -sf a b ${DEV_ONLY_MARKER}: fix link\n    just check\n`;
     assert.equal(substituteTemplateContent(content, baseOpts()), "setup:\n    bun install\n    just check\n");
@@ -77,6 +85,7 @@ describe("argsbarg create", () => {
   test("renderCreateTree for the npm cli template has a justfile and no Homebrew files", () => {
     const tree = renderCreateTree(baseOpts({ key: "testapp" }));
     assert.equal(tree.has("src/create-identity.ts"), true);
+    assert.equal(tree.has("skills/argsbarg-upsert/SKILL.md"), true);
     assert.equal(tree.has("skills/testapp/SKILL.md"), true);
     assert.ok(tree.has("justfile"));
     assert.equal(

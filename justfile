@@ -1,11 +1,10 @@
-# https://github.com/casey/just — run `just` to list recipes.
+# https://github.com/casey/just
 
-# bash (not sh); -e bail on errors, -u error on unset vars, pipefail fails pipelines when any stage fails
-set shell := ["bash", "-eu", "-o", "pipefail", "-c"]
+set shell := ["zsh", "-eu", "-o", "pipefail", "-c"]
 
 export PATH := justfile_directory() + "/node_modules/.bin:" + env("PATH")
 
-# List available recipes (default)
+# List recipes (default)
 _:
     @just --list
 

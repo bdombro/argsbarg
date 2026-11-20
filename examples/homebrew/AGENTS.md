@@ -14,9 +14,8 @@ When adding or changing commands, schemas, or MCP exposure:
 **Rules** (details are in the docs above; don't contradict them):
 
 - Reserved root commands: `completion`, `mcp`, `http`, `version`.
-- `argsbarg({ … })` builds the app in `src/app.ts`; `command({ … })` declares every command (typed `ctx.inputs` / `ctx.pathParams`). Give the root, commands, options, and positionals action-oriented `description`s.
-- Omit `mcpTool` unless a command is genuinely CLI-only (`enabled: false`) or hits an irreducible wire limit; fix the schema and headless path first.
-- Interactive commands have one headless path shared by MCP, non-TTY CLI, and `--yes` / `--dry-run` / `--json` (`shouldRunHeadless*`, `requireYesInNonTty`); don't branch on raw `isTTY`.
+- `argsbarg({ … })` builds the app in `src/app.ts`; declare each CLI, REST, RPC, and MCP surface explicitly.
+- Share schemas and domain functions rather than deriving wire endpoints from CLI argv.
 - String options: `format` / `default` / `pattern` per `cli-program.md`.
 - Varargs (`argMax: 0`): space-separated on the CLI, a JSON array over MCP; never comma-split positionals.
 - App settings are app code (env vars or your own file); argsbarg doesn't manage them.

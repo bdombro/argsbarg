@@ -9,68 +9,67 @@ It demonstrates how the schema scales beyond one command.
 
 import { readFile } from "node:fs/promises";
 import pkg from "../package.json" with { type: "json" };
-import { FallbackMode, OptionKind, wantsExplicitJson, command, argsbarg } from "../src/index.ts";
+import { FallbackMode, OptionKind, command, argsbarg, tool } from "../src/index.ts";
+import { z } from "zod";
+
+const statApp = argsbarg({
+  commands: [
+    command({
+      key: "owner",
+      description: "Ownership helpers.",
+      commands: [
+        command({
+          key: "lookup",
+          description: "Resolve owner info.",
+          options: [
+            {
+              name: "json",
+              description: "Emit handler output as JSON.",
+              kind: OptionKind.Presence,
+            },
+            {
+              name: "user-name",
+              description: "User to look up.",
+              kind: OptionKind.String,
+              shortName: "u",
+            },
+          ],
+          positionals: [
+            {
+              name: "path",
+              description: "File or directory.",
+              kind: OptionKind.String,
+            },
+          ],
+          handler: (ctx) => {
+            const user = ctx.inputs["user-name"] ?? "?";
+            const path = ctx.inputs.path;
+            if (!path) {
+              console.error("Missing path.");
+              process.exit(1);
+            }
+            if (ctx.inputs.json) {
+              const payload = { user, path };
+              console.log(JSON.stringify(payload));
+              return;
+            }
+            const text = `lookup user=${user} path=${path}`;
+            console.log(text);
+          },
+        }),
+      ],
+    }),
+  ],
+  description: "File metadata.",
+  key: "nested-stat.ts",
+  version: pkg.version,
+});
 
 const app = argsbarg({
+  children: {
+    stat: { app: statApp, expose: ["cli"] },
+  },
   commands: [
-    {
-      key: "stat",
-      description: "File metadata.",
-      commands: [
-        {
-          key: "owner",
-          description: "Ownership helpers.",
-          commands: [
-            command({
-              key: "lookup",
-              description: "Resolve owner info.",
-              options: [
-                {
-                  name: "json",
-                  description: "Emit handler output as JSON.",
-                  kind: OptionKind.Presence,
-                },
-                {
-                  name: "user-name",
-                  description: "User to look up.",
-                  kind: OptionKind.String,
-                  shortName: "u",
-                },
-              ],
-              positionals: [
-                {
-                  name: "path",
-                  description: "File or directory.",
-                  kind: OptionKind.String,
-                },
-              ],
-              handler: (ctx) => {
-                const user = ctx.stringOpt("user-name") ?? "?";
-                const path = ctx.args[0];
-                if (!path) {
-                  console.error("Missing path.");
-                  process.exit(1);
-                }
-                if (wantsExplicitJson(ctx, ctx.hasFlag("json"))) {
-                  const payload = { user, path };
-                  if (ctx.invocation === "cli") {
-                    console.log(JSON.stringify(payload));
-                    return;
-                  }
-                  return payload;
-                }
-                const text = `lookup user=${user} path=${path}`;
-                if (ctx.invocation === "cli") {
-                  console.log(text);
-                  return;
-                }
-                return text;
-              },
-            }),
-          ],
-        },
-      ],
-    },
     command({
       key: "read",
       description: "Print the first line of each file.",
@@ -84,11 +83,12 @@ const app = argsbarg({
         },
       ],
       handler: async (ctx) => {
-        if (ctx.args.length === 0) {
+        const files = ctx.inputs.files;
+        if (files.length === 0) {
           console.error("Missing file path.");
           process.exit(1);
         }
-        for (const path of ctx.args) {
+        for (const path of files) {
           try {
             const text = await readFile(path, "utf8");
             const firstLine = text.split("\n")[0];
@@ -104,7 +104,45 @@ const app = argsbarg({
   fallbackCommand: "read",
   fallbackMode: FallbackMode.MissingOrUnknown,
   key: "nested.ts",
-  mcpServer: { enabled: true },
+  mcp: {
+    tools: [
+      tool()({
+        name: "stat_owner_lookup",
+        description: "Resolve owner info for a file or directory.",
+        inputSchema: z.strictObject({
+          json: z.boolean().optional(),
+          path: z.string(),
+          "user-name": z.string().optional(),
+        }),
+        handler: ({ inputs }) => {
+          const user = inputs["user-name"] ?? "?";
+          return inputs.json
+            ? { user, path: inputs.path }
+            : `lookup user=${user} path=${inputs.path}`;
+        },
+      }),
+      tool()({
+        name: "read",
+        description: "Print the first line of each file.",
+        inputSchema: z.strictObject({
+          files: z.union([z.string(), z.array(z.string())]),
+        }),
+        handler: async ({ inputs }) => {
+          const files = typeof inputs.files === "string" ? [inputs.files] : inputs.files;
+          const lines: string[] = [];
+          for (const path of files) {
+            try {
+              const text = await readFile(path, "utf8");
+              lines.push(`${path}: ${text.split("\n")[0]}`);
+            } catch {
+              lines.push(`Cannot open: ${path}`);
+            }
+          }
+          return lines.join("\n");
+        },
+      }),
+    ],
+  },
   version: pkg.version,
 });
 

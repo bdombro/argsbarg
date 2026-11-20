@@ -18,10 +18,6 @@ export const echoCommand = command({
   ],
   handler: (ctx) => {
     const { message } = ctx.inputs;
-    if (ctx.invocation === "cli") {
-      console.log(message);
-      return;
-    }
     return message;
   },
 });

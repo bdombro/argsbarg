@@ -13,8 +13,8 @@ import { OptionKind, argsbarg } from "../src/index.ts";
 const app = argsbarg({
   description: "Tiny demo.",
   handler: (ctx) => {
-    const name = ctx.args[0] ?? "world";
-    if (ctx.hasFlag("verbose")) {
+    const name = ctx.inputs.name ?? "world";
+    if (ctx.inputs.verbose) {
       console.log("verbose mode");
     }
     console.log(`hello ${name}`);

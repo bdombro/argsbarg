@@ -2,8 +2,6 @@
 Maps headless respond payloads to native HTTP Response objects.
 */
 
-import type { HttpResponseConfig, RespondOptions } from "../core/types.ts";
-
 /** JSON body for a failed HTTP tool invocation. */
 export interface ApiToolCallErrorBody {
   error: string;
@@ -40,63 +38,8 @@ export function apiOptionsResponse(): Response {
   return new Response(null, { status: 204, headers: { ...API_CORS_HEADERS } });
 }
 
-/** Resolves effective Content-Type for a respond payload. */
-export function resolveRespondContentType(response: RespondOptions, leafApiResponse?: HttpResponseConfig): string {
-  return (
-    response.contentType ??
-    leafApiResponse?.contentType ??
-    (typeof response.body === "string" ? "text/plain; charset=utf-8" : "application/json; charset=utf-8")
-  );
-}
-
-/** Builds a native HTTP Response from a successful headless respond payload. */
-export function apiSuccessResponse(
-  response: RespondOptions,
-  leafApiResponse?: HttpResponseConfig,
-  defaultStatus?: number,
-): Response {
-  const contentType = resolveRespondContentType(response, leafApiResponse);
-  const headers: Record<string, string> = {
-    ...API_CORS_HEADERS,
-    "content-type": contentType,
-    ...(response.headers ?? {}),
-  };
-  if (leafApiResponse?.contentDisposition && !headers["content-disposition"]) {
-    headers["content-disposition"] = leafApiResponse.contentDisposition;
-  }
-
-  const status = response.status ?? defaultStatus ?? 200;
-  const { body } = response;
-
-  if (status === 204) {
-    return new Response(null, { status: 204, headers });
-  }
-
-  if (body instanceof Uint8Array) {
-    return new Response(body.buffer.slice(body.byteOffset, body.byteOffset + body.byteLength) as ArrayBuffer, {
-      status,
-      headers,
-    });
-  }
-  if (typeof body === "string") {
-    return new Response(body, { status, headers });
-  }
-  return new Response(JSON.stringify(body), { status, headers });
-}
-
-/** Builds a JSON error HTTP Response with CORS headers. */
-export function apiErrorResponse(status: number, body: ApiToolCallErrorBody): Response {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: {
-      ...API_CORS_HEADERS,
-      "content-type": "application/json; charset=utf-8",
-    },
-  });
-}
-
-/** Swagger UI HTML served at GET /swagger. */
-export function apiDocsHtml(): string {
+/** Builds Swagger UI HTML that loads one exact OpenAPI discovery document. */
+export function apiDocsHtml(openApiUrl = "/openapi.json"): string {
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -110,7 +53,7 @@ export function apiDocsHtml(): string {
   <script src="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui-bundle.js" crossorigin></script>
   <script>
     SwaggerUIBundle({
-      url: "/openapi.json",
+      url: ${JSON.stringify(openApiUrl)},
       dom_id: "#swagger-ui",
     });
   </script>

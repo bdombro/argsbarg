@@ -7,10 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-- **New:** opt-in concurrent MCP calls. Set `mcpServer: { enabled: true, concurrent: true }` and a long tool call no longer blocks the call that would unblock it. Calls still wait for initialization and workspace selection. In this mode `process.chdir` inside a command throws, since every call shares the process cwd. The default stays one call at a time. See [Concurrent calls](docs/mcp.md#concurrent-calls).
-- **New:** `argsbarg gateway --concurrent` runs calls concurrently across plugins. Bundles built with an older argsbarg are rejected at startup with a rebuild message.
-- **Fix:** overlapping `app.invoke()` calls and concurrent HTTP requests no longer mix their captured stdout/stderr. Capture is now per invocation (AsyncLocalStorage), installed once and shared by every argsbarg copy in the process.
+## [9.0.0] - 2026-11-20
+
+- **New:** ship intent-first authoring skills for bootstrapping new apps and upserting CLI, REST, JSON-RPC, or MCP capabilities in existing and external apps. All four create templates carry the shared upsert skill, and npm packages both skills.
+- **Breaking:** cut the public package to v9. Handlers receive direct invocation contexts; REST, JSON-RPC, and MCP use explicit `route()`, `method()`, and `tool()` declarations. The `CommandContext`/`respond` API, HTTP/MCP `App.invoke` bridge, argv-derived wire adapters, runtime gateway, and legacy server entry points are removed. Package version remains 8.3.1 until a separately requested release.
+- **New:** add `cli.guard` and `mcp.guard`, supplement/override/public operation guards, and one discriminated `mcp.http.middleware` admission result for request-local caller seeding. MCP stdio and local calls continue through fresh local-env-only seeds, relays perform policy at the destination, and HTTP denials with challenge/status metadata complete before progress SSE.
+- **New:** compose standalone apps with keyed `children` mounts. Build-time snapshots namespace CLI, REST, JSON-RPC, and MCP declarations, intersect exposure, scope child environment/header lookups by prefix, preserve child guards/hooks, and fail closed on collisions. The parent alone owns transports and lifecycle; OAuth, Tasks, runtime imports, stores, and child processes remain unmerged.
+- **Fix:** keep compiled declarations, invocation runners, native discovery encoders, and registry/catalog internals off the package root; export only public v9 authoring, middleware, and child-composition contracts.
+- **Changed:** limit Biome to `noUnsafeFinally` and `noGlobalEval` errors; formatting, style and overlapping TypeScript checks are no longer release gates. Intentional cases may use a narrow inline suppression with a reason.
+- **Fix:** release automation now excludes `.agents/` from release commits while still staging all product and documentation changes.
+- **Fix:** make each app package's `package.json` the canonical version source, including the Homebrew template and its release tooling.
 - **Fix:** in MCP mode, app writes to stdout outside a tool call (module-level `console.log`, stray timers) go to stderr instead of corrupting the JSON-RPC wire.
+- **Docs:** reconcile v9 docs with the implemented declarations and generated calls. Document CLI/MCP guard and caller-seed composition, keyed child snapshots, bare `serve` versus selected HTTP mounts, and the zsh development prerequisite. Keep host compatibility, OAuth integration, and MCP Tasks explicitly unimplemented or app-owned.
+- **Planning (unimplemented):** consider an opt-in OAuth helper for hosted `/mcp`. A future implementation would handle metadata and challenges; apps would supply token verification and authorization policy.
+- **Planning (unimplemented):** consider URL-mode elicitation for upstream OAuth sign-in, with a manual sign-in-and-rerun fallback. Neither path would change the tool's JSON Schemas.
+- **Planning:** compare input binding and invocation, MCP transport adapters, app-owned task providers, and hosted OAuth integration with matching app sketches and verification criteria.
+- **Planning:** select native binding and result encoding with a shared guarded runner. Route guards and handlers receive one typed input object; path, query, and body stay separate on the wire and can't map to the same input key.
+- **Planning:** select one MCP transport per process, shared tool declarations, and one `mcp.http.middleware` admission/caller-seed callback.
+- **Planning (unimplemented):** consider named `get`, `update`, and `cancel` callbacks for MCP Tasks and an explicit task return. Jobs and app-specific operations stay app-owned.
+- **Planning:** compare a surface-neutral factory, operations first, and independent surfaces in the next-major design. Each sketch shows the same command, route, and tool plus startup and cleanup. Common requirements live in the behavior reference. The companion app preview illustrates the factory approach and marks gaps from open decisions. Keep one package and one executable per app; backward compatibility and migration are non-goals. No runtime changes.
+- **Planning:** select the surface-neutral factory for the next major. Keep explicit optional CLI, HTTP, MCP, context, listener, lifecycle, and keyed child-composition contracts.
+- **Planning (unimplemented):** if gateway-style curation is implemented later, require explicit Zod contracts for validation and discovery. Native external schema import or reflection, live or per-caller catalogs, transparent federation, and merging child runtimes are unsupported.
+- **Docs:** move use cases into `docs/use-cases/`, distinguish implemented v9 surfaces from unimplemented design notes, and link to examples and starters.
+- **Docs:** cover app-owned terms acceptance, per-user preferences enforced by guards, and owner-controlled startup catalogs for local plugins, Homebrew, and Docker.
+- **New:** the package-root `resolveConfigDir(appKey, override?)` helper resolves a native per-user config directory or a complete absolute override, and creates it recursively when explicitly called. Loading and storage remain app-owned. See [Configuration directory](docs/cli-program.md#configuration-directory).
+- **Planning:** clarify next-major mirror-first Approach C framing, require `app.run()` to resolve via `process.exitCode` (no `process.exit()`) so app cleanup runs, require `/mcp` guard evaluation before SSE starts so `403 insufficient_scope` still works, and add MCP `2026-07-28` `CacheableResult`, deterministic `tools/list`, and `Mcp-Method`/`Mcp-Name` header details. Add deep-dive notes comparing 8.x gateway bundles vs child mounts and guard composition / caller handoff.
+- **Planning:** pivot next-major surfaces to drop auto-generated HTTP-to-JSON-RPC (`/api-rpc`) and MCP-to-HTTP (`/tools/{name}`) mirrors and add a standalone `jsonRpc` surface (`/rpc`, `/rpc/openrpc.json`, `myapp rpc ...`); adopt surface-level default guards (supplementable/overridable per operation), standardized `{app} serve ...` service launch, KISS `resolveConfigDir` directory creation, structured handler errors (`AppError`) plus Web `Response` for non-200 HTTP returns, static custom header forwarding on mounted HTTP/remote-MCP children, and dropping runtime `argsbarg gateway` / `mcpGatewayRegistry`.
+- **Docs:** add `docs/mcp/harness/` (`claude-code.md`, `opencode.md`, `cursor.md`, `copilot-cli.md`) for config syntax and host-verification gaps. Local fixtures do not establish per-harness MCP compatibility.
+- **Planning:** select async call overlap by default for the next major, without changing idle-host wakeups. Keep validated values in `ctx.inputs`, use separate local env and request header accessors, and allow boolean or structured guard results. Local MCP mirrors run shared guards, not HTTP middleware.
+- **Planning:** add `--relay` to REST, JSON-RPC, and MCP CLI mirrors for real requests to a running server. Without the flag, calls stay in-process.
+- **Planning:** drop `/mcp-rpc` from the next-major design. MCP tools use `tools/call`; standalone `/rpc` methods remain explicit.
+- **Planning:** split v9 implementation into independently testable slices, with shared-interface handoffs and one owner for final factory wiring.
+- **Planning:** define intent-first bootstrap and upsert skills that clarify scope before deep discovery and flag relevant published updates without upgrading automatically.
+- **Docs:** remove the repository requirement to use `thread-memory` before making changes.
 
 ## [8.3.1] - 2026-11-10
 
@@ -18,7 +47,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [8.3.0] - 2026-11-08
 
-- **New:** `argsbarg gateway [alias=]bundle.mjs…` serves several argsbarg MCP plugins from one Node process over stdio, saving one Node runtime per plugin per agent session. Tools are named `<alias>_<tool>`, instructions get one section per plugin, resources merge, and one shared `mcp_resource_read` tool reads any of them. Bundles join unchanged: `app.run()` registers with the gateway when it imports them. Plugins must be built with this version or later. See [MCP gateway](docs/mcp.md#mcp-gateway).
+- **New:** `argsbarg gateway [alias=]bundle.mjs…` serves several argsbarg MCP plugins from one Node process over stdio, saving one Node runtime per plugin per agent session. Tools are named `<alias>_<tool>`, instructions get one section per plugin, resources merge, and one shared `mcp_resource_read` tool reads any of them. Bundles join unchanged: `app.run()` registers with the gateway when it imports them. Plugins must be built with this version or later. This 8.x gateway is removed by the v9 cutover.
 - **New:** `errorReporter` on the app spec, made with `createErrorReporter({ dsn, env })`, sends command failures (CLI, HTTP, MCP) to a Sentry-compatible collector such as Bugsink, with zero dependencies. Input errors, help, unknown routes, cancellations and deliberate `process.exit` calls are not reported. Apps can also call `reportError` / `reportMessage` directly. Each reporter holds its own DSN, so plugins sharing a gateway still report to their own projects. See [Error reporting](docs/logging.md#error-reporting).
 
 - **Fix:** `argsbarg create` writes the template's `.gitignore` when the installed package has none. npm never publishes `.gitignore` files, so projects created from the npm package had no `.gitignore` and their initial commit included `node_modules`.
@@ -394,7 +423,7 @@ Chore
 
 - **HTTP trace propagation** — parses incoming `traceparent`, logs trace/span ids, and echoes an updated `traceparent` on responses.
 - **CLI log-format help** — describes JSON as ECS Logging, not generic ECS.
-- **Docs** — new [logging.md](logging.md) (`program.log`, `enrich`, `serialize`, examples); `http-server.md` links there.
+- **Docs** — add server logging documentation for `program.log`, `enrich`, `serialize`, and examples; the current v9 guide is [Server logging](docs/logging.md).
 
 ## [6.1.8] - 2026-07-27
 
@@ -438,7 +467,7 @@ Chore
 - **Server runtime and observability** — `ServerRuntime`, ECS logging (`program.log`), `serveHttp(overrides?)` / `serveMcp(overrides?)`, `GET /health/live` and `GET /health/ready`, soft config validation at server start, HTTP/MCP wire hooks, CLI flags on `http` / `mcp serve`.
 - **`pathParams`** on parse results and `ctx.inputs`; `:param` shell completion fallback.
 - **Schema export** — `outputContentType` on leaves without `outputSchema`; program `errorSchema` from server error config.
-- **Export subpaths** — `argsbarg/cli`, `argsbarg/http`, `argsbarg/mcp`, `argsbarg/headless` (root barrel unchanged). See [docs/developing.md](docs/developing.md#advanced-imports).
+- **Export subpaths** — `argsbarg/cli`, `argsbarg/http`, `argsbarg/mcp`, `argsbarg/headless` (root barrel unchanged). These 8.x subpaths are no longer part of the v9 package surface.
 - **`docs/json-schema-subset.md`** — documents the custom JSON Schema validator used for `appConfig` and `inputSchema`.
 - **`src/help.test.ts`** — label unit tests and help render regressions (migrated from `parse.test.ts`).
 - **Compact skill `reference.md`** — `generateCliGuideBody({ compact: true })` omits inline `outputSchema` JSON; pointers to `docs cli-schema` / OpenAPI.
@@ -712,7 +741,7 @@ Regenerate saved docs (`just docgen`) and run `argsbarg schemagen` after upgradi
 - **Breaking: skill install hint** — `Generated by … configure` (was `install --skill`).
 - **Formula `post_install`** — `configure --sync --yes` (was `install --reinstall --yes`).
 - **Just recipes** — `sync-artifacts`, `configure --remove-all --yes`, `configure --remove-config --yes`.
-- **Docs** — `docs/install.md` replaced by [docs/configure.md](docs/configure.md).
+- **Docs** — replace the former `docs/install.md` guide with installation and configuration guidance in the templates.
 
 ### Removed
 
@@ -738,7 +767,7 @@ Regenerate saved docs (`just docgen`) and run `argsbarg schemagen` after upgradi
 - **`CliAppConfigEntry.resolve`** — optional per-key fallback resolver after file (e.g. `gh auth token`); return `undefined` to fall back to `entry.env` and defaults. Resolution order: env → file → `resolve` → env → default.
 - **Install `--mcp` / `--skill` / `--configure` combined** — scoped flags compose (configure no longer blocks skill/MCP plan); configure wizard runs after install when combined.
 - **Top-level `uninstall` command** — sibling of `install` for removing agent artifacts; bare `uninstall` defaults to `--all`.
-- **Homebrew-first distribution** — tap-from-repo formula pattern; [docs/distribution-homebrew.md](docs/distribution-homebrew.md).
+- **Homebrew-first distribution** — tap-from-repo formula pattern; current template guidance lives in [Homebrew distribution](examples/homebrew/docs/distribution.md).
 - **Homebrew dev just recipes** — `install-local`, `reinstall-local`, `install-production` (+ `install` / `reinstall` aliases); `uninstall`, `uninstall-config`, `uninstall-release`, `uninstall-release-tap`, `test-release` in full-example template.
 - **CLI bin split** — `argsbarg` package bin points to `src/cli-tool/main.ts`; library API remains `import from "argsbarg"`.
 - **Config path exports** — `resolveAppConfigPath`, `displayAppConfigPath` exported from `argsbarg`.
@@ -1057,7 +1086,7 @@ Regenerate saved docs (`just docgen`) and run `argsbarg schemagen` after upgradi
 
 ### Added
 
-- **`docs` built-in** — opt in with `docs: { enabled: true, topics: { ... } }` on the program root. Bundled markdown topics on stdout (`myapp docs`, `myapp docs readme`, `myapp docs all`). Auto **`docs mcp`** guide when `docs` and `mcpServer` are both enabled. See [docs/bundled-docs.md](docs/bundled-docs.md).
+- **`docs` built-in** — v8-era opt-in bundled markdown command. The v9 cutover removes this built-in and publishes the Markdown package docs directly.
 
 ### Changed
 
@@ -1254,7 +1283,8 @@ const cli = { ... } satisfies CliProgram;  // or : CliProgram
 - Migrate schemas: rename every `children` property to **`commands`**; move positional definitions to **`CliPositional`** objects on `positionals` and strip `positional` / `argMin` / `argMax` from flag definitions under `options` (flags only carry `name`, `description`, `kind`, and optional `shortName`).
 - Imports: use `CliPositional` where needed; replace `CliOptionDef` with `CliOption` or `CliPositional` as appropriate.
 
-[Unreleased]: https://github.com/bdombro/argsbarg/compare/v8.3.1...HEAD
+[Unreleased]: https://github.com/bdombro/argsbarg/compare/v9.0.0...HEAD
+[9.0.0]: https://github.com/bdombro/argsbarg/releases/tag/v9.0.0
 [8.3.1]: https://github.com/bdombro/argsbarg/releases/tag/v8.3.1
 [8.3.0]: https://github.com/bdombro/argsbarg/releases/tag/v8.3.0
 [8.2.0]: https://github.com/bdombro/argsbarg/releases/tag/v8.2.0

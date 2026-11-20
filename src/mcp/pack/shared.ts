@@ -6,7 +6,6 @@ Internal module — not exported from index.ts.
 import { cpSync, type Dirent, existsSync, mkdirSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import type { AppSpec, McpBundleConfig } from "../../core/types.ts";
-import { sanitizeToolSegment } from "../tools.ts";
 import type { ZipFileEntry } from "./zip.ts";
 
 /**
@@ -68,7 +67,7 @@ export function pluginName(
 }
 
 /**
- * Stages the repository skill directory (`skills/<key>/` or `mcpServer.bundle.skillsDir`) when present;
+ * Stages the repository skill directory (`skills/<key>/` or `mcp.bundle.skillsDir`) when present;
  * without one, the plugin ships no skill.
  */
 export function stagePluginSkills(
@@ -79,9 +78,9 @@ export function stagePluginSkills(
   /** Working directory containing repository sources. */
   cwd: string,
 ): void {
-  const dirName = sanitizeToolSegment(program.key);
-  const repoSkillDir = program.mcpServer?.bundle?.skillsDir
-    ? resolve(cwd, program.mcpServer.bundle.skillsDir)
+  const dirName = program.key.replace(/[^a-zA-Z0-9]/g, "_");
+  const repoSkillDir = program.mcp?.bundle?.skillsDir
+    ? resolve(cwd, program.mcp.bundle.skillsDir)
     : join(cwd, "skills", dirName);
 
   if (existsSync(repoSkillDir) && statSync(repoSkillDir).isDirectory()) {

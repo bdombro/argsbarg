@@ -3,6 +3,7 @@ Status leaf — version with optional JSON stdout (no schemas).
 */
 
 import { command, OptionKind } from "argsbarg";
+import pkg from "../../../package.json" with { type: "json" };
 
 export const statusCommand = command({
   key: "status",
@@ -15,15 +16,7 @@ export const statusCommand = command({
     },
   ],
   handler: (ctx) => {
-    const out = { version: ctx.spec.version };
-    if (ctx.hasFlag("json")) {
-      console.log(JSON.stringify(out, null, 2));
-      return;
-    }
-    if (ctx.invocation === "cli") {
-      console.log(`version=${out.version}`);
-      return;
-    }
-    return out;
+    const out = { version: pkg.version };
+    return ctx.inputs.json ? out : `version=${out.version}`;
   },
 });

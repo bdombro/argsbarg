@@ -1,167 +1,35 @@
 # Server logging
 
-When you run `myapp http` or `myapp mcp`, Argsbarg writes **server logs to stderr** — not to stdout (handlers and CLI output stay on stdout).
-
-By default each log line is **one JSON object** (NDJSON), shaped for the [ECS Logging](https://github.com/elastic/ecs-logging) convention. That plays nicely with Datadog, Elasticsearch, GCP Logging, and similar collectors.
-
-For local development, switch to plain text with `--log-format text` or `program.log.format: "text"`.
-
-## What gets logged
-
-| Event | When | `event.action` |
-| --- | --- | --- |
-| Server start | HTTP/MCP process listens | `http.server.start` / `server.start` |
-| Access | After each HTTP request or MCP JSON-RPC message | `http.access` / `mcp.access` |
-| Invoke error | After `formatError` → `onError`, before the client sees the error | `invoke.error` |
-
-Toggle access or error lines with `program.log.access` and `program.log.errors` (both default to `true`).
-
-## Example line (default JSON)
-
-After `GET /workspaces` returns 200 in 45ms:
-
-```json
-{
-  "@timestamp": "2026-07-27T14:00:00.000Z",
-  "log.level": "info",
-  "message": "GET /workspaces",
-  "ecs.version": "8.11.0",
-  "service.name": "myapp",
-  "service.version": "1.0.0",
-  "event.action": "http.access",
-  "http.request.method": "GET",
-  "url.path": "/workspaces",
-  "http.response.status_code": 200,
-  "event.duration": 45000000,
-  "labels": { "request_id": "…" }
-}
-```
-
-`event.duration` is in **nanoseconds** (ECS convention). Durations in hook callbacks (`durationMs`) stay in milliseconds.
-
-When the client sends a W3C **`traceparent`** header, lines also include `trace.id` and `span.id`, and the response echoes an updated `traceparent`.
-
-## `log` options
-
-Set on the **app root** (same level as `httpServer` / `mcpServer`):
+Server and lifecycle logs go to stderr; handler stdout remains application output and MCP stdio protocol stays uncontaminated.
 
 ```typescript
-const app = argsbarg({
-  key: "myapp",
-  version: "1.0.0",
-  description: "…",
-  log: {
-    format: "json",   // "text" for human-readable stderr
-    file: "server.log", // optional tee; relative paths → working directory
-    access: true,     // HTTP/MCP access lines
-    errors: true,     // invoke error lines
-  },
-  // …
-});
-```
-
-| Field | Default | Purpose |
-| --- | --- | --- |
-| `format` | `"json"` | `"json"` = ECS Logging NDJSON; `"text"` = `INFO [http.access]: GET /path` |
-| `file` | — | Append the same lines to this path |
-| `access` | `true` | Emit one line per HTTP request / MCP message |
-| `errors` | `true` | Emit when a user command fails on HTTP/MCP |
-| `enrich` | — | Add custom fields to each JSON line (see below) |
-| `serialize` | — | Replace the built-in formatter entirely (see below) |
-
-CLI overrides on `myapp http` and `myapp mcp serve`: `--log-format`, `--log-file`, `--no-access-log` (HTTP only), `--dev` (print full stacks to stderr on errors).
-
-## `program.log.enrich` — add fields
-
-Use **`enrich`** when you want **extra JSON fields** on top of the default ECS line — for example a team label, deployment cell, or a shape your log pipeline expects.
-
-`enrich` is **additive only**. It cannot change `@timestamp`, `log.level`, `message`, `ecs.version`, `service.name`, `service.version`, or any field Argsbarg already set on that line.
-
-```typescript
-import type { LogEnrichContext } from "argsbarg";
-
 const app = argsbarg({
   // …
   log: {
     format: "json",
-    enrich: (ctx: LogEnrichContext) => {
-      // Always available:
-      // ctx.level, ctx.message, ctx.action, ctx.service.name, ctx.service.version
-      // ctx.requestId, ctx.traceId, ctx.spanId (when present)
-      // ctx.labels, ctx.error (on error lines)
-
-      // On access logs (http.access / mcp.access):
-      // ctx.http.method, ctx.http.path, ctx.http.status, ctx.http.durationMs, ctx.http.clientIp
-
-      return {
-        deployment: "prod",
-      };
-    },
+    file: "server.log",
+    access: true,
+    errors: true,
+    enrich: (ctx) => ({ deployment: "local" }),
   },
 });
 ```
 
-Return a flat object of field names → values. Argsbarg merges each key onto the log line unless that key is already set. To add team metadata inside ECS `labels`, put it in `event.labels` via hooks rather than fighting merge order — or use `serialize` for full control.
+JSON mode emits ECS-shaped NDJSON. Set `format: "text"` for local terminal output. `file` tees the same line to disk and resolves relative to the working directory.
 
-## `program.log.serialize` — own the whole line
+`enrich` adds fields. `serialize` replaces formatting and returns one complete line without a trailing newline; it takes precedence over `enrich`.
 
-Use **`serialize`** when the default ECS line is not what you need — for example a legacy JSON schema used only in your organization.
-
-When `serialize` is set, Argsbarg **does not** run the ECS formatter. Your function receives the same `LogEnrichContext` as `enrich` and must return the **full line text without a trailing newline** (Argsbarg adds `\n`).
-
-```typescript
-import type { LogEnrichContext } from "argsbarg";
-
-const app = argsbarg({
-  // …
-  log: {
-    format: "json",
-    serialize: (ctx: LogEnrichContext) =>
-      JSON.stringify({
-        message: ctx.message,
-        level: ctx.level.toUpperCase(),
-        contextMap: {
-          ...(ctx.traceId ? { trace_id: ctx.traceId } : {}),
-          ...(ctx.spanId ? { span_id: ctx.spanId } : {}),
-        },
-      }),
-  },
-});
-```
-
-Do **not** set both `enrich` and `serialize` expecting both to apply — `serialize` wins and `enrich` is ignored.
-
-Prefer **`enrich`** when you only need a few extra fields. Reserve **`serialize`** for fully custom output.
-
-## Trace correlation (HTTP)
-
-If an upstream service (gateway, sidecar, mesh) sends a standard **`traceparent`** header:
-
-1. Argsbarg parses it and logs `trace.id` / `span.id`.
-2. The HTTP response includes an updated `traceparent` for this hop.
-
-No configuration required. If the header is missing, Argsbarg does not invent a trace id.
+HTTP access records include safe request method, path, status, duration, trace fields, and request id. Native request bodies, headers, credentials, and locals are not logged by argsbarg.
 
 ## Error reporting
 
-Logs stay on stderr; to collect failures in a Sentry-compatible service (Sentry, Bugsink, GlitchTip), set `errorReporter` on the app spec. The reporter has no dependencies: it posts Sentry envelopes with `fetch`.
-
 ```typescript
-import { argsbarg, createErrorReporter } from "argsbarg";
+import { createErrorReporter } from "argsbarg";
 
-/** Shared with code that reports silent failures. */
-export const errors = createErrorReporter({ dsn: "https://key@bugsink.example.com/3", env: "MYAPP_ERROR_DSN" });
-
-export const app = argsbarg({ key: "myapp", errorReporter: errors /* … */ });
+const errors = createErrorReporter({
+  dsn: "https://key@example.invalid/1",
+  env: "MYAPP_ERROR_DSN",
+});
 ```
 
-- **Reported:** errors thrown by command handlers on CLI, HTTP and MCP, with `invocation` and `path` as extra context. Not reported: input and schema validation errors, help, unknown routes, cancellations and deliberate `process.exit` calls.
-- **Direct use:** `errors.reportError(err, extra)` and `errors.reportMessage(message, level, extra)` for failures a command handles itself (a background job's skipped step, say).
-- **`env`:** names an env var that overrides the DSN; an empty value turns reporting off (tests).
-- Reporting never throws and waits at most 10 seconds per event. Each reporter keeps its own DSN, so apps sharing an [MCP gateway](mcp.md#mcp-gateway) report to their own projects.
-
-## Related
-
-- [http-server.md](http-server.md) — HTTP server setup and endpoints
-- [mcp.md](mcp.md) — MCP server (same `log` applies)
-- [decisions.md](decisions.md#4-logging-ecs-json-on-stderr) — why ECS Logging and hooks instead of a bundled observability SDK
+Unexpected handler failures may be sent to a Sentry-compatible endpoint. Input errors, expected denials, help, unknown routes, cancellation, and deliberate process exits are not reported. The reporter never throws and waits at most ten seconds.

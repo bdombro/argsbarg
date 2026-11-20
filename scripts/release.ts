@@ -8,8 +8,8 @@
  *
  * Usage: `node scripts/release.ts <major|minor|patch>` (usually via `just release <bump>`.)
  *
- * Requires: `git`, `gh` (authenticated), `npm` logged in for publish. The release commit stages **all**
- * repo changes (`git add -A`), not only the version and CHANGELOG edits from this script.
+ * Requires: `git`, `gh` (authenticated), `npm` logged in for publish. The release commit stages all
+ * repo changes except `.agents/`, not only the version and CHANGELOG edits from this script.
  */
 
 import { spawnSync } from "node:child_process";
@@ -247,7 +247,7 @@ const tag = `v${nextVersion}`;
 const msg = `release ${tag}`;
 
 try {
-  run("git add (all)", ["git", "add", "-A"], repoRoot);
+  run("git add (release paths)", ["git", "add", "-A", "--", ".", ":(exclude).agents"], repoRoot);
   run("git commit", ["git", "commit", "-m", msg], repoRoot);
   run("git tag", ["git", "tag", "-a", tag, "-m", msg], repoRoot);
   run("git push", ["git", "push"], repoRoot);

@@ -3,14 +3,23 @@ Packs a CLI program into an MCP Bundle (`.mcpb`) for Claude Desktop.
 Expects `dist/<program.key>` as the compiled binary input.
 */
 
-import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  cpSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import type { AppSpec, McpBundleConfig } from "../../core/types.ts";
-import { collectMcpTools, mcpResourceReadTool, mcpServerId } from "../tools.ts";
 import { packClaudePlugin } from "./claude.ts";
 import { packCursorPlugin } from "./cursor.ts";
-import { zipStore } from "./zip.ts";
+import { type ZipFileEntry, zipStore } from "./zip.ts";
 
 const MANIFEST_VERSION = "0.3";
 const DIST_DIR = "dist";
@@ -33,7 +42,7 @@ export function defaultMcpBundlePaths(program: AppSpec, cwd = process.cwd()): Mc
   };
 }
 
-/** Default author when `mcpServer.bundle.author` is unset. */
+/** Default author when `mcp.bundle.author` is unset. */
 function defaultAuthor(bundle?: McpBundleConfig): {
   name: string;
   email?: string;
@@ -44,19 +53,15 @@ function defaultAuthor(bundle?: McpBundleConfig): {
 
 /** Generates MCPB `manifest.json` object from program schema and MCP tools. */
 export function generateMcpManifest(program: AppSpec, binaryName: string): Record<string, unknown> {
-  const bundle = program.mcpServer?.bundle;
-  const tools = collectMcpTools(program).map((t) => ({
+  const bundle = program.mcp?.bundle;
+  const tools = (program.mcp?.tools ?? []).map((t) => ({
     name: t.name,
     description: t.description.split("\n")[0] ?? t.description,
   }));
-  const resourceTool = mcpResourceReadTool(program);
-  if (resourceTool) {
-    tools.push({ name: resourceTool.name, description: resourceTool.description.split("\n")[0] ?? "" });
-  }
 
   const manifest: Record<string, unknown> = {
     manifest_version: MANIFEST_VERSION,
-    name: mcpServerId(program),
+    name: program.key.replace(/[^a-zA-Z0-9]/g, "_"),
     version: program.version,
     description: program.description,
     author: defaultAuthor(bundle),
@@ -65,7 +70,7 @@ export function generateMcpManifest(program: AppSpec, binaryName: string): Recor
       entry_point: binaryName,
       mcp_config: {
         command: `\${__dirname}/${binaryName}`,
-        args: ["mcp"],
+        args: ["serve", "mcp", "--stdio"],
       },
     },
     tools,
@@ -116,15 +121,15 @@ export function packMcpBundle(program: AppSpec, opts: PackMcpBundleOpts = {}): s
     chmodSync(stagedBinary, 0o755);
 
     const manifest = generateMcpManifest(program, binaryName);
-    const files: { name: string; data: Buffer }[] = [
+    const files: ZipFileEntry[] = [
       {
         name: "manifest.json",
         data: Buffer.from(`${JSON.stringify(manifest, null, 2)}\n`, "utf8"),
       },
-      { name: binaryName, data: readFileSync(stagedBinary) },
+      { name: binaryName, data: readFileSync(stagedBinary), unixMode: statSync(stagedBinary).mode },
     ];
 
-    const iconRel = program.mcpServer?.bundle?.icon;
+    const iconRel = program.mcp?.bundle?.icon;
     if (iconRel) {
       const iconSrc = resolve(cwd, iconRel);
       if (!existsSync(iconSrc)) {
@@ -147,10 +152,10 @@ export function runMcpBundle(
   /** CLI program schema. */
   program: AppSpec,
 ): void {
-  const mcp = program.mcpServer;
+  const mcp = program.mcp;
   if (!mcp?.mcpd && !mcp?.claudePlugin && !mcp?.cursorPlugin) {
     throw new Error(
-      "mcp bundle: enable mcpServer.mcpd, mcpServer.claudePlugin, and/or mcpServer.cursorPlugin on the app root.",
+      "mcp bundle: enable mcp.mcpd, mcp.claudePlugin, and/or mcp.cursorPlugin on the app root.",
     );
   }
 

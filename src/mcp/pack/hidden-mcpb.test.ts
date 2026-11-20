@@ -3,7 +3,16 @@ Tests for hidden-mcpb module behavior.
 */
 
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, test } from "node:test";
@@ -12,14 +21,13 @@ import { cliParseRoot, cliPresentationRoot } from "../../builtins/presentation.t
 import { schemaExport } from "../../core/schema.ts";
 import { type AppSpec, OptionKind } from "../../core/types.ts";
 import { cliHelpRender } from "../../runtime/help.ts";
-import { collectMcpTools } from "../tools.ts";
 import { defaultMcpBundlePaths, generateMcpManifest, packMcpBundle, runMcpBundle } from "./bundle.ts";
 
 const hiddenFixture: AppSpec = {
   key: "myapp",
   version: "1.0.0",
   description: "Hidden demo.",
-  mcpServer: { enabled: true, mcpd: true, claudePlugin: true },
+  mcp: { tools: [], mcpd: true, claudePlugin: true },
   commands: [
     {
       key: "public",
@@ -29,7 +37,6 @@ const hiddenFixture: AppSpec = {
     {
       key: "secret",
       cli: { hidden: true },
-      mcpTool: { hidden: true },
       description: "Hidden command.",
       handler: () => {},
     },
@@ -97,13 +104,6 @@ describe("hidden commands and options", () => {
     );
   });
 
-  test("MCP tools omit hidden commands", () => {
-    const tools = collectMcpTools(hiddenFixture);
-    assert.deepEqual(
-      tools.map((t) => t.name),
-      ["flags", "public"],
-    );
-  });
 });
 
 /** Tests for mcp router. */
@@ -116,7 +116,7 @@ describe("mcp router", () => {
       mcp?.commands?.map((c) => c.key),
       ["bundle"],
     );
-    assert.equal(mcp?.fallbackCommand, "serve");
+    assert.equal(mcp?.fallbackCommand, undefined);
   });
 
   test("mcp help lists bundle", () => {
@@ -128,7 +128,7 @@ describe("mcp router", () => {
 
 /** Tests for mcp bundle. */
 describe("mcp bundle", () => {
-  test("generateMcpManifest uses mcpServerId and binary entry", () => {
+  test("generateMcpManifest uses the app id and binary entry", () => {
     const manifest = generateMcpManifest(hiddenFixture, "myapp");
     assert.equal(manifest.name, "myapp");
     assert.equal(manifest.manifest_version, "0.3");
@@ -136,7 +136,7 @@ describe("mcp bundle", () => {
     assert.equal((manifest.server as { entry_point: string }).entry_point, "myapp");
     const mcpConfig = (manifest.server as { mcp_config: { command: string; args: string[] } }).mcp_config;
     assert.equal(mcpConfig.command, "${__dirname}/myapp");
-    assert.deepEqual(mcpConfig.args, ["mcp"]);
+    assert.deepEqual(mcpConfig.args, ["serve", "mcp", "--stdio"]);
     assert.deepEqual((manifest.compatibility as { platforms: string[] }).platforms, ["darwin"]);
   });
 
@@ -163,6 +163,11 @@ describe("mcp bundle", () => {
       assert.ok(zip.length > 0);
       assert.ok(zip.indexOf(Buffer.from("manifest.json")) >= 0);
       assert.ok(zip.indexOf(Buffer.from("myapp")) >= 0);
+
+      const extract = join(work, "extract");
+      mkdirSync(extract, { recursive: true });
+      execFileSync("unzip", ["-o", "-q", outPath], { cwd: extract });
+      assert.equal(statSync(join(extract, "myapp")).mode & 0o777, 0o755);
     } finally {
       rmSync(work, { recursive: true, force: true });
     }
@@ -213,7 +218,7 @@ describe("mcp bundle", () => {
     }) as typeof process.stdout.write;
     const fixture: AppSpec = {
       ...hiddenFixture,
-      mcpServer: { enabled: true, claudePlugin: true },
+      mcp: { tools: [], claudePlugin: true },
     };
     try {
       const dist = join(work, "dist");
@@ -246,7 +251,7 @@ describe("mcp bundle", () => {
     }) as typeof process.stdout.write;
     const fixture: AppSpec = {
       ...hiddenFixture,
-      mcpServer: { enabled: true, cursorPlugin: true },
+      mcp: { tools: [], cursorPlugin: true },
     };
     try {
       const dist = join(work, "dist");
@@ -271,7 +276,7 @@ describe("mcp bundle", () => {
   test("runMcpBundle errors when no bundle flags enabled", () => {
     const fixture: AppSpec = {
       ...hiddenFixture,
-      mcpServer: { enabled: true },
+      mcp: { tools: [] },
     };
     assert.throws(() => runMcpBundle(fixture), /cursorPlugin/);
   });

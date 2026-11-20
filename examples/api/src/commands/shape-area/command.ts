@@ -39,10 +39,6 @@ export const shapeAreaCommand = command({
   handler: (ctx) => {
     const shape = ctx.inputs;
     const area = shape.kind === "circle" ? Math.PI * shape.radius ** 2 : shape.width * shape.height;
-    if (ctx.invocation === "cli") {
-      console.log(area);
-      return;
-    }
     return { area };
   },
 });

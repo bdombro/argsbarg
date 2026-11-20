@@ -125,7 +125,11 @@ The formula class name (PascalCase of the key), homepage, and tap come from `src
 2.  **Archive**: Packages the binary into a compressed `dist/example-homebrew.zip`.
 3.  **Integrity Check**: Calculates the cryptographically secure SHA-256 hash of the zip file.
 4.  **Formula Sync**: Updates the version number and `sha256` parameter in `Formula/example-homebrew.rb`.
-5.  **Tag & Push**: Commits changes, tags the repository with the new version, pushes to GitHub, and publishes the compiled zip to GitHub Releases.
+5.  **Tag & Push**: Runs `git add -A`, commits all non-ignored changes across the containing repository (including existing edits, new files and deletions), tags the repository with the new version, pushes to GitHub, and publishes the compiled zip to GitHub Releases.
+
+A clean working tree is not required. Review all changes before releasing: when
+running this example inside the argsbarg repository, its release commit also
+includes changes outside `examples/homebrew`.
 
 ### Older Release Retention & Cleanup:
 

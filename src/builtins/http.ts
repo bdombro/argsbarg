@@ -1,14 +1,17 @@
+/*
+Defines the capability-gated HTTP help node without registering a service-start alias.
+Its options are shared by the accepted `serve http` launcher grammar.
+*/
+
 import {
   type AppSpec,
   type CommandGroup,
   type CommandOption,
-  FallbackMode,
   OptionKind,
-  type RunnableCommand,
 } from "../core/types.ts";
-import { httpUserPathGlob, resolveHttpPathPrefix } from "../http/paths.ts";
-import { resolveHttpListenAddress } from "../http/server.ts";
+import { resolveHttpServeConfig } from "../server/overrides.ts";
 
+/** Supported CLI overrides for the explicit `serve http` launcher. */
 const HTTP_SERVE_OPTIONS: readonly CommandOption[] = [
   { name: "host", description: "Listen host.", kind: OptionKind.String },
   { name: "port", description: "Listen port.", kind: OptionKind.Number },
@@ -29,32 +32,23 @@ const HTTP_SERVE_OPTIONS: readonly CommandOption[] = [
   { name: "dev", description: "Print full stacks to stderr on errors.", kind: OptionKind.Presence },
 ];
 
-/** Built-in `http` router: bare `myapp http` runs the HTTP server (via hidden `serve` fallback). */
+/** Built-in `http` router retained for accepted service help and compatibility validation. */
 export function cliBuiltinHttpCommand(program: AppSpec): CommandGroup {
-  const { hostname, port } = resolveHttpListenAddress(program);
-  const userGlob = httpUserPathGlob(resolveHttpPathPrefix(program));
+  const target = resolveHttpServeConfig(program).targets[0];
+  const address = target.kind === "tcp" ? `http://${target.host}:${target.port}` : "configured HTTP listener";
   const lines = [
-    `HTTP tool server on http://${hostname}:${port}.`,
+    `HTTP service on ${address}.`,
     "",
-    `Endpoints: GET /health/liveness, GET /health/readiness, GET /openapi.json, GET /swagger, ${userGlob}`,
+    "REST: /api/openapi.json and /api/*; JSON-RPC: /rpc/openrpc.json and /rpc; MCP: /mcp.",
     "",
   ];
-
-  const serve: RunnableCommand = {
-    key: "serve",
-    cli: { hidden: true },
-    description: "Run as an HTTP API server for tools.",
-    handler: () => {},
-  };
 
   return {
     key: "http",
     description: "HTTP API server for tools.",
     notes: lines.join("\n"),
     options: [...HTTP_SERVE_OPTIONS],
-    fallbackCommand: "serve",
-    fallbackMode: FallbackMode.MissingOnly,
-    commands: [serve],
+    commands: [],
   };
 }
 

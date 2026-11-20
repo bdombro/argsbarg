@@ -1,9 +1,9 @@
 /*
-Per-surface exposure helpers (cli, http, mcpTool).
-Parsing uses the full tree; presentation/schema/MCP/HTTP discovery use these filters.
+CLI presentation and callable exposure helpers.
+Parsing uses the full tree; help, schema, and completions use these filters.
 */
 
-import type { Command, CommandBase, CommandOption, RunnableCommand } from "../core/types.ts";
+import type { Command, CommandBase, CommandOption } from "../core/types.ts";
 import { hasSubcommands } from "../core/types.ts";
 
 /** True when the node is omitted from CLI help, schema, and completions (still invocable). */
@@ -38,14 +38,6 @@ export function isCliCompletionsHidden(node: CommandBase): boolean {
   return isCliHidden(node);
 }
 
-/** True when the leaf is omitted from MCP tools/list. */
-export function isMcpHidden(leaf: RunnableCommand): boolean {
-  if (leaf.mcpTool?.enabled === false) {
-    return true;
-  }
-  return leaf.mcpTool?.hidden === true;
-}
-
 /** True when the node is not callable via CLI (`cli.enabled: false`, cascades from parent). */
 export function isCliCallable(node: CommandBase, parentEnabled = true): boolean {
   if (!parentEnabled) {
@@ -55,16 +47,6 @@ export function isCliCallable(node: CommandBase, parentEnabled = true): boolean 
     return false;
   }
   return true;
-}
-
-/** True when the leaf is omitted from HTTP route table / OpenAPI. */
-export function isHttpHidden(node: CommandBase): boolean {
-  return node.http?.hidden === true;
-}
-
-/** True when the leaf is not exposed on HTTP (disabled or hidden). */
-export function isHttpDisabled(node: CommandBase): boolean {
-  return node.http?.enabled === false;
 }
 
 /** Options visible in help, schema, completions, and MCP tool inputSchema. */
@@ -88,15 +70,4 @@ export function presentationNode(node: Command): Command | null {
 /** Subcommands visible in help listings. */
 export function visibleSubcommands(cmds: Command[]): Command[] {
   return cmds.filter((c) => !isCliHidden(c));
-}
-
-/** Default HTTP response metadata from a leaf `http` block. */
-export function leafHttpResponseDefaults(leaf: RunnableCommand): {
-  contentType?: string;
-  contentDisposition?: string;
-} {
-  return {
-    contentType: leaf.http?.successContentType,
-    contentDisposition: leaf.http?.contentDisposition,
-  };
 }

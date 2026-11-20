@@ -17,7 +17,6 @@ const stagingDir = join(root, "Formula", ".staging");
 const stagingPath = join(stagingDir, key);
 const formulaPath = join(root, "Formula", `${key}.rb`);
 const backupPath = join(stagingDir, `${key}.rb.bak`);
-const programPath = join(root, "src/app.ts");
 
 type Command = "install" | "reset";
 
@@ -51,13 +50,12 @@ function restoreReleaseFormula(): void {
 }
 
 function readVersion(): string {
-  const content = readFileSync(programPath, "utf8");
-  const match = /version:\s*"([^"]+)"/.exec(content);
-  if (!match?.[1]) {
-    process.stderr.write(`Could not read version from ${programPath}\n`);
+  const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as { version?: unknown };
+  if (typeof pkg.version !== "string") {
+    process.stderr.write("Could not read version from package.json\n");
     process.exit(1);
   }
-  return match[1];
+  return pkg.version;
 }
 
 function stageDevFormula(): void {

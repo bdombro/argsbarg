@@ -1,16 +1,21 @@
 {
   "$schema": "https://biomejs.dev/schemas/2.5.0/schema.json",
-  "assist": { "actions": { "source": { "organizeImports": "on" } } },
+  "root": false,
+  "assist": { "actions": { "source": { "organizeImports": "off" } } },
   "linter": {
     "enabled": true,
     "rules": {
-      "preset": "recommended"
+      "recommended": false,
+      "correctness": {
+        "noUnsafeFinally": "error"
+      },
+      "security": {
+        "noGlobalEval": "error"
+      }
     }
   },
   "formatter": {
-    "enabled": true,
-    "indentStyle": "space",
-    "lineWidth": 120
+    "enabled": false
   },
   "overrides": [
     {

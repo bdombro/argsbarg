@@ -1,22 +1,20 @@
 {
   "$schema": "https://biomejs.dev/schemas/2.5.0/schema.json",
-  "assist": { "actions": { "source": { "organizeImports": "on" } } },
+  "assist": { "actions": { "source": { "organizeImports": "off" } } },
   "linter": {
     "enabled": true,
     "rules": {
-      "preset": "recommended",
-      "complexity": {
-        "noStaticOnlyClass": "off"
+      "recommended": false,
+      "correctness": {
+        "noUnsafeFinally": "error"
       },
-      "suspicious": {
-        "noTemplateCurlyInString": "off"
+      "security": {
+        "noGlobalEval": "error"
       }
     }
   },
   "formatter": {
-    "enabled": true,
-    "indentStyle": "space",
-    "lineWidth": 120
+    "enabled": false
   },
   "overrides": [
     {
@@ -27,14 +25,7 @@
         "**/completion-bash.ts",
         "**/completion-simulate-shared.ts",
         "**/completion-zsh.ts"
-      ],
-      "linter": {
-        "rules": {
-          "suspicious": {
-            "noTemplateCurlyInString": "off"
-          }
-        }
-      }
+      ]
     }
   ]
 }

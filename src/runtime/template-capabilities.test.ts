@@ -19,8 +19,8 @@ const sinkProgram = {
   key: "cli",
   version: "1.0.0",
   description: "Copy template reference.",
-  mcpServer: { enabled: true },
-  httpServer: { enabled: true },
+  mcp: { tools: [] },
+  http: { routes: [] },
   commands: [
     {
       key: "status",
@@ -45,8 +45,8 @@ const sinkProgram = {
 
 describe("cli template", () => {
   test("program source enables every builtin flag", () => {
-    assert.ok(cliProgramSource.includes("mcpServer: {"));
-    assert.ok(cliProgramSource.includes("httpServer: {"));
+    assert.ok(cliProgramSource.includes("mcp: {"));
+    assert.ok(cliProgramSource.includes("http: {"));
     assert.ok(!cliProgramSource.includes("docs:"));
     assert.ok(!cliProgramSource.includes("appConfig:"));
   });
@@ -67,8 +67,8 @@ describe("cli template", () => {
 
 describe("api template", () => {
   test("program source enables every builtin flag", () => {
-    assert.ok(jsonProgramSource.includes("mcpServer: {"));
-    assert.ok(jsonProgramSource.includes("httpServer: {"));
+    assert.ok(jsonProgramSource.includes("mcp: {"));
+    assert.ok(jsonProgramSource.includes("http: {"));
     assert.ok(!jsonProgramSource.includes("docs:"));
     assert.ok(!jsonProgramSource.includes("appConfig:"));
   });

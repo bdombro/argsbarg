@@ -5,13 +5,21 @@ read from, so the package has one source of truth.
 */
 
 import type { z } from "zod";
-import type { CommandContext, CommandInputs } from "./context.ts";
+import type { HttpRouteRegistration } from "../http/routes.ts";
+import type { JsonRpcMethodMetadata } from "../json-rpc/declaration.ts";
+import type { McpHttpConfig } from "../mcp/http.ts";
+import type { McpToolRegistration } from "../mcp/registry.ts";
+import type { App } from "../runtime/cli.ts";
+import type { Guard, InvocationContext, OperationGuard } from "./invocation.ts";
 import { toJsonSchema } from "./zod-schema.ts";
 
 /**
  * How a command handler was dispatched.
  */
 export type Invocation = "cli" | "mcp" | "http";
+
+/** Coerced command values keyed by authored option and positional names. */
+export type CommandInputs = Record<string, boolean | number | string | string[] | unknown | undefined>;
 
 /**
  * Option kinds: presence (boolean flag), string (free-form text), number (strict double), enum (fixed choices), or json (parsed JSON object/array).
@@ -88,26 +96,6 @@ export interface CliExposureConfig {
 export type HttpMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
 
 /**
- * Per-node HTTP exposure and response defaults (groups: segment/enabled/hidden; runnable commands: full set).
- */
-export interface HttpExposureConfig {
-  /** When `false`, omit from HTTP route table. Default: exposed. */
-  enabled?: boolean;
-  /** Callable; omit from OpenAPI / route discovery. */
-  hidden?: boolean;
-  /** Override inferred HTTP verb. */
-  method?: HttpMethod;
-  /** URL path segment override (≠ `key`). */
-  segment?: string;
-  /** Default success HTTP status when handler omits `ctx.respond({ status })`. */
-  successStatus?: number;
-  /** Default success Content-Type (OpenAPI + response headers). */
-  successContentType?: string;
-  /** Default Content-Disposition for binary/downloads. */
-  contentDisposition?: string;
-}
-
-/**
  * A named flag or value option (`--long`, `-short`), listed on command `options`.
  */
 export interface CommandOption {
@@ -166,7 +154,7 @@ export interface CommandPositional {
   argMax?: number;
 }
 
-/** @experimental MCP bundle output options (app root `mcpServer.bundle` only). */
+/** MCP bundle and plugin packaging metadata. */
 export interface McpBundleConfig {
   author?: {
     name: string;
@@ -187,66 +175,6 @@ export interface McpBundleConfig {
   repository?: string;
   /** Custom relative path to repository skills directory (defaults to `skills/<dirName>`). */
   skillsDir?: string;
-}
-
-/**
- * Enables `myapp mcp` and MCP stdio server metadata (app root only).
- * Must include `enabled: true`; omit `mcpServer` entirely to disable MCP.
- * @experimental
- */
-export interface McpServerConfig {
-  /** When `true`, enables the `mcp` built-in and MCP stdio server. */
-  enabled: boolean;
-  /**
-   * Returned as `initialize.result.instructions`. Keep it to a short pointer explaining when
-   * to use the tools and where to read their skill, rather than duplicating usage documentation.
-   */
-  instructions?: string;
-  /** MCP error response defaults. */
-  errors?: McpServerErrorsConfig;
-  /** Observe-only hooks for JSON-RPC messages. */
-  hooks?: McpWireHooks;
-  /** When `true`, `mcp bundle` writes `dist/<key>.mcpb` for Claude Desktop. Default false. */
-  mcpd?: boolean;
-  /** When `true`, `mcp bundle` also writes `dist/claude-plugin/<name>.zip`. Default false. */
-  claudePlugin?: boolean;
-  /** When `true`, `mcp bundle` also writes `dist/cursor-plugin/<name>.zip`. Default false. */
-  cursorPlugin?: boolean;
-  /**
-   * Capture the user's login shell environment at MCP server start and merge it
-   * into process.env. Solves missing PATH, nvm/rbenv shims, Homebrew binaries,
-   * and shell exports that MCP hosts (e.g. Cursor) don't inherit.
-   */
-  shellEnv?: boolean | string;
-  /**
-   * Custom MCP resources (`resources/list`, `resources/read`). URIs must be unique.
-   */
-  resources?: McpResource[];
-  /** Optional MCP Bundle (`.mcpb`) metadata for `mcp bundle`. */
-  bundle?: McpBundleConfig;
-  /** Overrides the default startup size warnings (see {@link McpSizeLimits}). */
-  sizeLimits?: McpSizeLimits;
-  /** Opt-in: run MCP tool calls concurrently instead of one at a time. Default false. */
-  concurrent?: boolean;
-  /** Opt into strict outputSchema validation and schema-conforming typed MCP results. Default false. */
-  validateOutputs?: boolean;
-}
-
-/**
- * Size limits for one MCP tool's `description` and pretty-printed definition, and for `instructions`.
- * Set a field to `false` to disable that check. Defaults come from two client behaviors observed in the
- * wild, not from the MCP spec itself, so they may need retuning as those clients change:
- * Claude Code truncates a tool's `description` past `descriptionChars`; Cursor syncs each tool's full
- * definition (`{name, description, inputSchema, outputSchema}`, pretty-printed) to a file under
- * `mcps/<server>/tools/<tool>.json` and its agent reads that file in chunks of at most `definitionBytes`
- * bytes or `definitionLines` lines, whichever comes first — a tool at or beyond either limit is read
- * incompletely on the first pass.
- */
-export interface McpSizeLimits {
-  definitionBytes?: number | false;
-  definitionLines?: number | false;
-  descriptionChars?: number | false;
-  instructionsChars?: number | false;
 }
 
 /** Emitted JSON Schema object (produced from Zod schemas by argsbarg; used by MCP, OpenAPI, help, and export). */
@@ -272,130 +200,6 @@ export interface HttpWireContext {
   spanId?: string;
 }
 
-/** Wire-level MCP hooks on JSON-RPC messages (observe-only). */
-export interface McpWireHooks {
-  onRequest?: (ctx: McpWireContext) => void | Promise<void>;
-  onResponse?: (ctx: McpWireContext & { durationMs: number }) => void | Promise<void>;
-  onError?: (ctx: McpWireContext & { failureKind: InvokeFailureKind; error: unknown }) => void | Promise<void>;
-}
-
-/** Per-message MCP wire context for {@link McpWireHooks}. */
-export interface McpWireContext {
-  rpcMethod: string;
-  requestId: string;
-  toolName?: string;
-  /** Cooperative cancellation for this invocation; pass it to child-process APIs. */
-  signal?: AbortSignal;
-  /** Reports increasing progress when the client supplied a progress token; otherwise a no-op. */
-  reportProgress?: (progress: number, total?: number, message?: string) => void;
-}
-
-/**
- * Enables `myapp http` and the HTTP tool server (app root only).
- * Must include `enabled: true`; omit `httpServer` entirely to disable HTTP.
- */
-export interface HttpServerConfig {
-  /** When `true`, enables the `http` built-in and HTTP tool server. */
-  enabled: boolean;
-  /** Listen host (default: `127.0.0.1`). */
-  host?: string;
-  /** Listen port (default: `3000`). */
-  port?: number;
-  /**
-   * URL prefix for user command routes (default: `""` — routes at server root, e.g. `/workspaces`).
-   * Set to `"/api"` for `/api/workspaces`-style paths.
-   */
-  pathPrefix?: string;
-  /** Honor `X-Forwarded-For` for client IP in hooks and logs. */
-  trustProxy?: boolean;
-  /** HTTP error response defaults. */
-  errors?: { errorSchema?: z.ZodType; obscureUnexpected?: boolean };
-  /** Observe-only hooks for all HTTP requests. */
-  hooks?: HttpWireHooks;
-}
-
-/** MCP server error defaults. */
-export interface McpServerErrorsConfig {
-  /** Zod schema for structured error bodies (emitted as JSON Schema in OpenAPI and MCP). */
-  errorSchema?: z.ZodType;
-  obscureUnexpected?: boolean;
-}
-
-/**
- * Declarative HTTP response hints passed to {@link apiSuccessResponse}.
- * @internal Prefer `HttpExposureConfig` on the command.
- */
-export interface HttpResponseConfig {
-  /** Default success Content-Type (default: `application/json`). */
-  contentType?: string;
-  /** Optional Content-Disposition (e.g. `attachment; filename="invoice.pdf"`). */
-  contentDisposition?: string;
-}
-
-/** Body types accepted by {@link CommandContext.respond}. */
-export type RespondBody = string | number | boolean | null | Uint8Array | Record<string, unknown> | unknown[];
-
-/** Options for {@link CommandContext.respond} and headless invoke results. */
-export interface RespondOptions {
-  body: RespondBody;
-  /** Default: `application/json` for objects/arrays, `text/plain` for strings; binary requires explicit type. */
-  contentType?: string;
-  /** HTTP status (default: 200). */
-  status?: number;
-  headers?: Record<string, string>;
-}
-
-/**
- * A custom MCP resource exposed under resources/list and resources/read.
- */
-export interface McpResource {
-  /** Resource URI (must be unique). */
-  uri: string;
-  /** Short display name for resources/list. */
-  name: string;
-  /** Optional human description for resources/list. */
-  description?: string;
-  /** MIME type (default: "text/plain"). */
-  mimeType?: string;
-  /** Called at resources/read time; must return the resource body. */
-  load: () => string;
-}
-
-/**
- * Runnable commands only. Controls how this command appears as an MCP tool.
- */
-export interface McpToolConfig {
-  /** When `false`, omit from `tools/list` (default: exposed). */
-  enabled?: boolean;
-  /** Callable; omit from `tools/list` and MCP tool schemas. */
-  hidden?: boolean;
-  /**
-   * Override the generated MCP tool description.
-   * Default: auto-generated from command path and description.
-   */
-  description?: string;
-  /**
-   * Overrides the command's `notes` in the MCP description only — CLI help always shows `notes` unchanged.
-   * `false` omits notes from the MCP description entirely; a string replaces them. Omit to use `notes` as
-   * given. Useful when a note only makes sense with `--help` in front of it (a CLI-only workflow tip), or
-   * when the full CLI notes would push a definition past a size limit (see {@link McpSizeLimits}).
-   */
-  notes?: string | false;
-  /** Advisory MCP hints, never authorization or automatic confirmation. Omitted hints use MCP's conservative defaults. */
-  annotations?: {
-    /** Human-readable tool title. */
-    title?: string;
-    /** True only when the tool does not modify its environment. */
-    readOnlyHint?: boolean;
-    /** Whether the tool can perform destructive updates. */
-    destructiveHint?: boolean;
-    /** Whether repeated calls have no additional effect. */
-    idempotentHint?: boolean;
-    /** Whether the tool can interact with external entities. */
-    openWorldHint?: boolean;
-  };
-}
-
 /** Opt-out for the `completion` built-in (default: enabled). */
 export interface CompletionConfig {
   /** When `false`, hide/disable `completion` (default: enabled). */
@@ -410,8 +214,6 @@ export interface CommandBase {
   key: string;
   /** Per-surface CLI exposure. */
   cli?: CliExposureConfig;
-  /** Per-surface HTTP exposure and response defaults. */
-  http?: HttpExposureConfig;
   /** Short description shown in help. */
   description: string;
   /** Additional notes shown in help (`{argsbarg:program}` → program key). */
@@ -426,12 +228,48 @@ export type CommandKind = "document";
 /** Handler `ctx.inputs` type for a command: the schema's parsed output, or coerced option/positional values. */
 export type CommandInputsOf<I> = [I] extends [z.ZodType] ? z.output<I> : CommandInputs;
 
-/** Handler `ctx.pathParams` type for a command: the `pathParams` schema's parsed output, or raw string segments. */
+/** Parsed output type for one declared CLI path-parameter schema. */
 export type CommandPathParamsOf<P> = [P] extends [z.ZodObject] ? z.output<P> : Record<string, string>;
 
+/** Declared path fields merged into flat handler inputs; undeclared captures are runtime-only. */
+type FlatCommandPathInputs<P> = [P] extends [z.ZodObject] ? z.output<P> : Record<never, never>;
+
 /** Handler return type for a command: the output schema's type (or nothing), or `unknown` without an output schema. */
-// biome-ignore lint/suspicious/noConfusingVoidType: `void` lets handlers that only print (no return) type-check.
 export type CommandResultOf<O> = [O] extends [z.ZodType] ? z.output<O> | void : unknown;
+
+/** Direct transport-neutral context supplied to every command handler. */
+export type CommandHandlerContext<Input, Seed extends object = Locals> = InvocationContext<Input, Seed>;
+
+/** Shallow merge preserving command operation-guard additions. */
+type MergeCommandLocals<Seed extends object, Added extends object> = {
+  [Key in keyof Seed | keyof Added]: Key extends keyof Added
+    ? Added[Key]
+    : Key extends keyof Seed
+      ? Seed[Key]
+      : never;
+};
+
+/** Contextually typed operation guard accepted by the command builder. */
+type CommandBuilderGuard<Input, Seed extends object, Added extends object> =
+  | Guard<Input, Seed, Added>
+  | {
+      /** Selects command-owned replacement of the CLI surface guard. */
+      readonly mode: "override";
+      /** Replacement guard evaluated from the CLI seed. */
+      readonly run: Guard<Input, Seed, Added>;
+    }
+  | "public";
+
+/**
+ * Command guard with method-bivariance so concrete parsed inputs can join a heterogeneous command tree.
+ * The callback still receives the exact declared input and locals context.
+ */
+type CommandGuard<Input, Seed extends object> = {
+  bivarianceHack(
+    /** Parsed command inputs and the current invocation locals. */
+    context: InvocationContext<Input, Seed>,
+  ): ReturnType<Guard<Input, Seed, object>>;
+}["bivarianceHack"];
 
 /**
  * A command that runs a handler (with optional positionals).
@@ -441,6 +279,8 @@ export type RunnableCommand<
   I extends z.ZodType | undefined = z.ZodType | undefined,
   O extends z.ZodType | undefined = z.ZodType | undefined,
   P extends z.ZodObject | undefined = z.ZodObject | undefined,
+  Seed extends object = Locals,
+  Added extends object = Record<never, never>,
 > = CommandBase & {
   /**
    * When `"document"`, the command accepts a single JSON document
@@ -450,14 +290,15 @@ export type RunnableCommand<
   kind?: CommandKind;
   /** Handler (method syntax so typed commands fit in heterogeneous `commands` arrays). */
   handler(
-    ctx: CommandContext<CommandInputsOf<I>, CommandPathParamsOf<P>>,
+    ctx: CommandHandlerContext<CommandInputsOf<I> & FlatCommandPathInputs<P>, MergeCommandLocals<Seed, Added>>,
   ): CommandResultOf<O> | Promise<CommandResultOf<O>>;
+  /** Optional command-owned supplement, replacement, or public marker. */
+  guard?: OperationGuard<CommandGuard<CommandInputsOf<I> & FlatCommandPathInputs<P>, Seed>>;
   /** Positional argument definitions. */
   positionals?: readonly CommandPositional[];
   /**
    * Zod schema for structured stdout (e.g. with `--json` or MCP when the handler emits JSON).
-   * Emitted in schema export, MCP `tools/list`, and OpenAPI. MCP runtime validation requires
-   * `mcpServer.validateOutputs: true`; CLI and REST output are not runtime-validated.
+   * Emitted in CLI schema export and used for direct handler return inference.
    */
   outputSchema?: O;
   /**
@@ -467,11 +308,9 @@ export type RunnableCommand<
   inputSchema?: I;
   /**
    * Zod object schema for the `:param` segments above this command (keys = param names without `:`). Validated
-   * before the handler; the parsed value becomes `ctx.pathParams`. Field descriptions are shown to MCP and OpenAPI.
+   * before the handler; parsed path fields merge into `ctx.inputs`.
    */
   pathParams?: P;
-  /** Per-tool MCP exposure and metadata. */
-  mcpTool?: McpToolConfig;
 };
 
 /**
@@ -503,39 +342,18 @@ export interface Locals {
   requestId?: string;
 }
 
-/**
- * Cross-request server state (HTTP/MCP runtime bag).
- * Augment in app code: `declare module "argsbarg" { interface ServerState { db: AppDb } }`.
- */
-export interface ServerState {
-  /** Short-TTL cache for readiness probe results. */
-  readinessCache?: {
-    at: number;
-    result: { ok: boolean; checks: Record<string, { ok: boolean; error?: string; missing?: string[] }> };
-  };
-  /** Last readiness probe result. */
-  readiness?: { ok: boolean; checks: Record<string, { ok: boolean; error?: string; missing?: string[] }> };
-}
-
-/** Cross-request mutable state created at HTTP/MCP server start. */
-export interface ServerRuntime {
-  /** Mutable global bag (DB pool, degraded flags, readiness cache, etc.). */
-  state: ServerState;
-  spec: AppSpec;
-  surface: "http" | "mcp";
-}
-
 /** Context for app-level invoke hooks (CLI, HTTP, MCP user commands). */
 export interface InvokeHookContext {
-  invocation: Invocation;
+  /** Native surface selected for this invocation. */
+  surface: import("./invocation.ts").Surface;
+  /** Exact cancellation signal retained by the invocation. */
+  signal: AbortSignal;
+  /** Routed declaration path. */
   path: string[];
-  pathParams: Record<string, string>;
-  opts: Record<string, string>;
+  /** Read-only raw binding summary retained before validation. */
+  rawInputs: Readonly<Record<string, unknown>>;
   /** Per-invocation bag; `beforeInvoke` may write. Framework seeds `requestId` before hooks run. */
   locals: Locals;
-  runtime?: ServerRuntime;
-  http?: { request: Request; clientIp: string; requestId: string; traceId?: string; spanId?: string };
-  mcp?: { rpcMethod: string; toolName?: string; requestId: string };
 }
 
 /** Error hook context after failure classification. */
@@ -562,20 +380,13 @@ export interface InvokeHookResult {
 
 /** App-level invoke and error hooks (skipped for builtins). */
 export interface AppHooks {
-  /** May mutate `locals`, `opts`, `args`; may throw. Skipped for builtins. */
+  /** May attach app-owned values to the fresh locals bag before validation. */
   beforeInvoke?: (ctx: InvokeHookContext) => void | Promise<void>;
   afterInvoke?: (ctx: InvokeHookContext & { result: InvokeHookResult }) => void | Promise<void>;
   /** Mutate client-facing error payload only. Runs before `onError`. */
   formatError?: (ctx: ErrorHookContext) => ClientErrorOverride | undefined | Promise<ClientErrorOverride | undefined>;
   /** Observe only — runs after `formatError`; may enrich `locals`. Never mutates client response. */
   onError?: (ctx: ErrorHookContext) => void | Promise<void>;
-}
-
-/** Context for optional `readiness` (HTTP/MCP health only). */
-export interface ReadinessContext {
-  spec: AppSpec;
-  surface: "http" | "mcp";
-  runtime: ServerRuntime;
 }
 
 /** Framework logging defaults (ECS Logging json or human text on stderr). */
@@ -600,6 +411,67 @@ export interface LogConfig {
   serialize?: (ctx: import("../log/ecs.ts").LogEnrichContext) => string;
 }
 
+/** Policy applied to user-authored CLI leaves before command guards. */
+export interface CliAppConfig<Seed extends object = Locals> {
+  /** Optional CLI surface guard compiled into every native CLI declaration. */
+  readonly guard?: Guard<unknown, Seed, object>;
+}
+
+/** Independent native REST registration exposed by the app factory. */
+export interface HttpAppConfig {
+  /** Explicit REST routes consumed by one fixed catalog. */
+  readonly routes: readonly HttpRouteRegistration[];
+  /** Optional HTTP surface guard compiled before operation guards. */
+  readonly guard?: import("./invocation.ts").Guard<unknown, Locals, object>;
+  /** Optional listener host overriding the loopback default. */
+  readonly host?: string;
+  /** Optional listener port overriding `3000`. */
+  readonly port?: number;
+  /** Whether wire hooks may use forwarded client-address headers. */
+  readonly trustProxy?: boolean;
+  /** Observe-only hooks for REST requests. */
+  readonly hooks?: HttpWireHooks;
+}
+
+/** Independent native JSON-RPC registration exposed by the app factory. */
+export interface JsonRpcAppConfig {
+  /** Exact registered RPC method declarations in discovery order. */
+  readonly methods: readonly JsonRpcMethodMetadata[];
+  /** Optional RPC surface guard compiled before operation guards. */
+  readonly guard?: import("./invocation.ts").Guard<unknown, Locals, object>;
+}
+
+/** Independent native MCP registration exposed by the app factory. */
+export interface McpAppConfig<Seed extends object = Locals> {
+  /** Heterogeneous immutable tool registrations supplied to one registry. */
+  readonly tools: readonly McpToolRegistration<Seed>[];
+  /** Optional MCP surface guard compiled before every tool operation guard. */
+  readonly guard?: Guard<unknown, Seed, object>;
+  /** Package-internal HTTP transport boundary with one public middleware callback. */
+  readonly http?: McpHttpConfig<Seed>;
+  /** Optional instructions returned by MCP discovery. */
+  readonly instructions?: string;
+  /** Optional bundle and plugin packaging metadata. */
+  readonly bundle?: McpBundleConfig;
+  /** Package a Claude Desktop `.mcpb` bundle. */
+  readonly mcpd?: boolean;
+  /** Package a Claude Code plugin archive. */
+  readonly claudePlugin?: boolean;
+  /** Package a Cursor plugin archive. */
+  readonly cursorPlugin?: boolean;
+}
+
+/** Native app surface that one mounted child may expose. */
+export type ChildSurface = "cli" | "http" | "jsonRpc" | "mcp";
+
+/** One build-time child app mount copied into the parent's fixed declaration catalogs. */
+export interface ChildAppMount {
+  /** Already-built child app snapshotted while the parent is constructed. */
+  readonly app: App;
+  /** Exact child surfaces to expose, or every configured child surface when omitted. */
+  readonly expose?: readonly ChildSurface[];
+}
+
 /**
  * App spec passed to `argsbarg()`.
  * May be a command or command group, plus optional app-level MCP and HTTP config.
@@ -608,20 +480,24 @@ export type AppSpec = Command & AppSpecFields;
 
 /** Root settings shared by grouping and runnable roots (see {@link AppSpec} and `argsbarg()`). */
 export type AppSpecFields = {
+  /** Build-time keyed child app snapshots composed into the parent's fixed catalogs. */
+  readonly children?: Readonly<Record<string, ChildAppMount>>;
+  /** User-authored CLI policy; generated mirror commands keep their target surface policy. */
+  cli?: CliAppConfig<Locals>;
   /** Opt-out for shell completion generation (`completion bash|zsh|fish`). */
   completion?: CompletionConfig;
   /** Reports unexpected command failures (CLI, HTTP, MCP) to a Sentry-compatible collector; see `createErrorReporter`. */
   errorReporter?: import("../log/error-report.ts").ErrorReporter;
   /** Invoke and error hooks for user commands on CLI, HTTP, and MCP. */
   hooks?: AppHooks;
-  /** When set with `enabled: true`, enables the `http` built-in HTTP server. */
-  httpServer?: HttpServerConfig;
+  /** Independently declared REST surface and fixed route catalog inputs. */
+  http?: HttpAppConfig;
+  /** Independently declared JSON-RPC methods and fixed OpenRPC catalog inputs. */
+  jsonRpc?: JsonRpcAppConfig;
   /** Framework logging (stderr + optional file). */
   log?: LogConfig;
-  /** When set with `enabled: true`, enables the `mcp` built-in subcommand. */
-  mcpServer?: McpServerConfig;
-  /** Optional readiness probe for HTTP/MCP `GET /health/readiness` only. */
-  readiness?: (ctx: ReadinessContext) => boolean | Promise<boolean>;
+  /** Independently declared MCP 2026 tools and discovery inputs. */
+  mcp?: McpAppConfig<Locals>;
   /** App version (printed by the `version` built-in and MCP serverInfo). */
   version: string;
 };
@@ -659,6 +535,7 @@ export function leafInputSchema(leaf: RunnableCommand): JsonSchema | undefined {
  * `positionals` literals), `ctx.pathParams` from `pathParams`, and the return value from `outputSchema`. With
  * `commands` it groups subcommands and keeps its literal type. Identity at runtime.
  */
+export function command<Seed extends object = Locals>(): CommandBuilder<Seed>;
 export function command<const T extends CommandGroup>(
   /** Command that groups subcommands. */
   group: T,
@@ -669,13 +546,42 @@ export function command<
   P extends z.ZodObject | undefined = undefined,
   const Opts extends readonly CommandOption[] = [],
   const Pos extends readonly CommandPositional[] = [],
+  const Added extends object = Record<never, never>,
 >(
   /** Command that runs a handler. */
-  runnable: CommandDef<I, O, P, Opts, Pos>,
+  runnable: CommandDef<I, O, P, Opts, Pos, Locals, Added>,
   // NoInfer: generics come from the definition, never from where the result is used (e.g. a `commands` array).
-): RunnableCommand<NoInfer<I>, NoInfer<O>, NoInfer<P>>;
+): RunnableCommand<NoInfer<I>, NoInfer<O>, NoInfer<P>, Locals, Added>;
 export function command(
   /** Command definition. */
+  node?: Command,
+): Command | CommandBuilder<Locals> {
+  if (node === undefined) return buildCommand as CommandBuilder<Locals>;
+  return node;
+}
+
+/** Call signatures returned by an extracted, seed-typed command builder. */
+interface CommandBuilder<Seed extends object> {
+  <const T extends CommandGroup>(
+    /** Command that groups subcommands. */
+    group: T,
+  ): NoInfer<T>;
+  <
+    I extends z.ZodType | undefined = undefined,
+    O extends z.ZodType | undefined = undefined,
+    P extends z.ZodObject | undefined = undefined,
+    const Opts extends readonly CommandOption[] = [],
+    const Pos extends readonly CommandPositional[] = [],
+    const Added extends object = Record<never, never>,
+  >(
+    /** Command that runs a handler. */
+    runnable: CommandDef<I, O, P, Opts, Pos, Seed, Added>,
+  ): RunnableCommand<NoInfer<I>, NoInfer<O>, NoInfer<P>, Seed, Added>;
+}
+
+/** Extracted command builder implementation shared by each selected seed type. */
+function buildCommand(
+  /** Command declaration preserved by identity. */
   node: Command,
 ): Command {
   return node;
@@ -691,16 +597,26 @@ export type CommandDef<
   P extends z.ZodObject | undefined,
   Opts extends readonly CommandOption[],
   Pos extends readonly CommandPositional[],
-> = Omit<RunnableCommand<I, O, P>, "handler" | "options" | "positionals"> & {
+  Seed extends object = Locals,
+  Added extends object = Record<never, never>,
+> = Omit<RunnableCommand<I, O, P, Seed>, "handler" | "options" | "positionals" | "guard"> & {
   /** Command-local flags/options (their literal types drive `ctx.inputs` typing). */
   options?: Opts;
   /** Positional argument definitions (their literal types drive `ctx.inputs` typing). */
   positionals?: Pos;
+  /** Optional command-owned supplement, replacement, or public marker. */
+  guard?: CommandBuilderGuard<
+    ([I] extends [z.ZodType] ? z.output<I> : CommandOptionInputs<Opts> & CommandPositionalInputs<Pos>) &
+      FlatCommandPathInputs<P>,
+    Seed,
+    Added
+  >;
   /** Handler function. */
   handler(
-    ctx: CommandContext<
-      [I] extends [z.ZodType] ? z.output<I> : CommandOptionInputs<Opts> & CommandPositionalInputs<Pos>,
-      CommandPathParamsOf<P>
+    ctx: CommandHandlerContext<
+      ([I] extends [z.ZodType] ? z.output<I> : CommandOptionInputs<Opts> & CommandPositionalInputs<Pos>) &
+        FlatCommandPathInputs<P>,
+      MergeCommandLocals<Seed, Added>
     >,
   ): CommandResultOf<O> | Promise<CommandResultOf<O>>;
 };

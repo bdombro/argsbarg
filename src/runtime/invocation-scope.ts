@@ -9,6 +9,7 @@ argsbarg copies loaded by the MCP gateway find the same state through a global s
 
 import { AsyncLocalStorage } from "node:async_hooks";
 import { format } from "node:util";
+import type { Surface } from "../core/invocation.ts";
 
 /** Output buffers and process hooks for one running invocation. */
 export interface InvocationScope {
@@ -22,6 +23,15 @@ export interface InvocationScope {
   forbidChdir: boolean;
   /** Set once the invocation settles; later writes from its async callbacks take the outside path. */
   closed: boolean;
+  /** Stable source and surface metadata, with no handler inputs, locals, or credentials. */
+  readonly metadata: {
+    /** Binder-selected credential source family. */
+    readonly source: "local" | "http";
+    /** Binder-selected application surface. */
+    readonly surface: Surface;
+  };
+  /** Cooperative cancellation signal captured for this invocation. */
+  readonly signal: AbortSignal;
 }
 
 /** Process-wide capture state, shared across argsbarg copies through {@link SCOPE_STATE_KEY}. */
@@ -37,7 +47,7 @@ export interface InvocationScopeState {
 }
 
 /** Bumped when {@link InvocationScopeState} changes incompatibly. */
-export const INVOCATION_SCOPE_VERSION = 1;
+export const INVOCATION_SCOPE_VERSION = 2;
 
 /** Global key under which the first argsbarg copy publishes the shared state. */
 const SCOPE_STATE_KEY = Symbol.for("argsbarg.invocation-scope");

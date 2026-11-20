@@ -7,7 +7,6 @@ import { isCliSchemaHidden, visibleOptions } from "../runtime/exposure.ts";
 import { cliResolveNotes } from "../runtime/help.ts";
 import { type AppSpec, type Command, hasHandler, hasSubcommands, leafOutputSchema } from "./types.ts";
 import { buildCommandInputSchema } from "./wire-schema.ts";
-import { toJsonSchema } from "./zod-schema.ts";
 
 const RESERVED = new Set(["http", "completion", "configure", "docs", "mcp", "version"]);
 
@@ -38,8 +37,6 @@ function exportCommand(cmd: Command, root: AppSpec): SchemaExport | null {
     const outputSchema = leafOutputSchema(cmd);
     if (outputSchema !== undefined) {
       out.outputSchema = outputSchema;
-    } else if (cmd.http?.successContentType !== undefined) {
-      out.outputContentType = cmd.http.successContentType;
     }
     out.commands = exportPresentationBuiltins(root);
     return out;
@@ -73,15 +70,11 @@ function resolveSchemaNotes(node: SchemaExport, appKey: string): SchemaExport {
 }
 
 /** JSON-safe command tree export (handlers omitted). */
-export interface SchemaRootExport extends SchemaExport {
-  /** App-level error JSON Schema when configured on `httpServer.errors` or `mcpServer.errors`. */
-  errorSchema?: Record<string, unknown>;
-}
+export interface SchemaRootExport extends SchemaExport {}
 
 /** Returns the JSON-safe command tree (handlers omitted). */
 export function schemaExport(root: AppSpec): SchemaRootExport {
   const exported = exportCommand(root, root);
-  const errorSchema = root.httpServer?.errors?.errorSchema ?? root.mcpServer?.errors?.errorSchema;
   const base: SchemaRootExport = !exported
     ? {
         key: root.key,
@@ -89,9 +82,6 @@ export function schemaExport(root: AppSpec): SchemaRootExport {
         commands: exportPresentationBuiltins(root),
       }
     : resolveSchemaNotes(exported, root.key);
-  if (errorSchema !== undefined) {
-    base.errorSchema = toJsonSchema(errorSchema, "output");
-  }
   return base;
 }
 

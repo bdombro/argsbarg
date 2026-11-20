@@ -6,7 +6,8 @@ human-readable, path-prefixed error messages. Nothing else in argsbarg imports z
 
 import { z } from "zod";
 import { resolveJsonPointer } from "./json-pointer.ts";
-import type { JsonSchema } from "./types.ts";
+import type { CommandOption, JsonSchema, RunnableCommand } from "./types.ts";
+import { OptionKind, ValueFormat } from "./types.ts";
 
 /** Which side of a schema to emit: what callers send (`input`) or what the schema produces (`output`). */
 export type SchemaIo = "input" | "output";
@@ -218,4 +219,113 @@ export function validateWithSchema(
     return { valid: false, errors: all };
   }
   return { valid: false, errors: [...all.slice(0, MAX_ERRORS), `…and ${all.length - MAX_ERRORS} more errors`] };
+}
+
+/** Inputs used to synthesize the one runtime schema for a routed CLI command. */
+export interface RuntimeLeafSchemaOptions {
+  /** Leaf whose authored and structural inputs are combined. */
+  readonly leaf: RunnableCommand;
+  /** Effective root and ancestor/leaf option definitions in parser order. */
+  readonly options: readonly CommandOption[];
+  /** Exact path names that were captured while routing. */
+  readonly pathNames: readonly string[];
+}
+
+/** Creates a finite strict object schema for one CLI option definition. */
+function optionZodSchema(option: CommandOption): z.ZodType {
+  let schema: z.ZodType;
+  if (option.kind === OptionKind.Presence) return z.boolean();
+  if (option.kind === OptionKind.Number) schema = z.number().finite();
+  else if (option.kind === OptionKind.Enum) schema = z.enum(option.choices as [string, ...string[]]);
+  else if (option.kind === OptionKind.Json) schema = z.unknown();
+  else {
+    schema =
+      option.format === ValueFormat.Duration
+        ? z.number().finite()
+        : option.format === ValueFormat.CommaList
+          ? z.array(z.string())
+          : z.string();
+    if (option.pattern !== undefined) schema = z.string().regex(new RegExp(option.pattern));
+  }
+  return option.required || option.default !== undefined ? schema : schema.optional();
+}
+
+/** Resolves emitted object property names, or throws for a schema that cannot expose finite object fields. */
+function objectPropertyNames(schema: z.ZodType): Set<string> {
+  const emitted = toJsonSchema(schema, "input");
+  const properties = emitted.properties;
+  if (typeof properties !== "object" || properties === null || Array.isArray(properties)) {
+    throw new TypeError("CLI inputSchema must be a plain Zod object when composed with path inputs");
+  }
+  return new Set(Object.keys(properties));
+}
+
+/**
+ * Synthesizes the one Zod schema parsed by `invokeBound` for a routed CLI declaration.
+ * Authored schemas remain authoritative while path values are parsed in the same outer schema operation.
+ */
+export function runtimeLeafInputSchema(options: RuntimeLeafSchemaOptions): z.ZodType {
+  const { leaf, options: optionDefs, pathNames } = options;
+  const pathNameSet = new Set(pathNames);
+  const structuralNames = new Set<string>();
+  for (const name of [
+    ...optionDefs.map((option) => option.name),
+    ...(leaf.positionals ?? []).map((slot) => slot.name),
+  ]) {
+    if (structuralNames.has(name) || pathNameSet.has(name)) {
+      throw new TypeError(`CLI input key "${name}" is declared more than once`);
+    }
+    structuralNames.add(name);
+  }
+
+  if (leaf.inputSchema === undefined) {
+    const shape: Record<string, z.ZodType> = {};
+    for (const option of optionDefs) {
+      const schema = optionZodSchema(option);
+      shape[option.name] = option.kind === OptionKind.Presence ? schema.default(false) : schema;
+    }
+    for (const slot of leaf.positionals ?? []) {
+      const many = slot.argMax === 0 || (slot.argMax ?? 1) > 1;
+      const minimum = slot.argMin ?? 1;
+      let schema: z.ZodType = many ? z.array(z.string()).min(minimum) : z.string();
+      if (minimum === 0) schema = schema.optional();
+      shape[slot.name] = schema;
+    }
+    const pathShape = leaf.pathParams?.shape ?? {};
+    for (const name of pathNames) {
+      if (!(name in pathShape)) shape[name] = z.string();
+    }
+    Object.assign(shape, pathShape);
+    return z.strictObject(shape);
+  }
+
+  if (leaf.pathParams === undefined && pathNames.length === 0) return leaf.inputSchema;
+  const authoredNames = objectPropertyNames(leaf.inputSchema);
+  for (const name of pathNames) {
+    if (authoredNames.has(name)) {
+      throw new TypeError(`CLI path key "${name}" is also declared by inputSchema`);
+    }
+  }
+  const authoredPathShape = (leaf.pathParams?.shape ?? {}) as Record<string, z.ZodType>;
+  const undeclaredPathSchema = z.strictObject(
+    Object.fromEntries(pathNames.map((name) => [name, authoredPathShape[name] ?? z.string()])),
+  );
+  return z
+    .unknown()
+    .transform((value) => {
+      const raw =
+        typeof value === "object" && value !== null && !Array.isArray(value)
+          ? (value as Record<string, unknown>)
+          : value;
+      if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return { body: raw, path: {} };
+      const record = raw as Record<string, unknown>;
+      const path = Object.fromEntries(pathNames.map((name) => [name, record[name]]));
+      const body = Object.fromEntries(Object.entries(record).filter(([name]) => !pathNameSet.has(name)));
+      return { body, path };
+    })
+    .pipe(z.strictObject({ body: leaf.inputSchema, path: undeclaredPathSchema }))
+    .transform(({ body, path }) => {
+      if (typeof body !== "object" || body === null || Array.isArray(body)) return body;
+      return { ...path, ...(body as Record<string, unknown>) };
+    });
 }

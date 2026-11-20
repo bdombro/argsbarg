@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, describe, test } from "node:test";
-import type { ReadinessContext } from "argsbarg";
 import { AppDb } from "./index.ts";
 
 describe("AppDb", () => {
@@ -46,40 +45,15 @@ describe("AppDb.openWithRetry", () => {
 describe("AppDb.attach", () => {
   test("sets ctx.locals.db", () => {
     const locals = {} as import("argsbarg").Locals;
-    AppDb.attach({ locals, invocation: "cli" });
+    AppDb.attach({ locals });
     locals.db.workspaces.create("attached");
     assert.equal(locals.db.workspaces.list().length, 1);
   });
 });
 
 describe("AppDb.checkReadiness", () => {
-  test("returns false before server database is initialized", () => {
-    const runtime = {
-      state: {},
-      spec: { key: "t", description: "d" },
-      surface: "http" as const,
-    };
-    const ctx = {
-      spec: runtime.spec,
-      surface: "http" as const,
-      runtime,
-    } as unknown as ReadinessContext;
-    assert.equal(AppDb.checkReadiness(ctx), false);
-  });
-
-  test("returns true when sqlite responds", () => {
+  test("returns true when the app-owned database responds", () => {
     AppDb.resetForTests();
-    const runtime = {
-      state: { db: AppDb.open() },
-      spec: { key: "t", description: "d" },
-      surface: "http" as const,
-    };
-    const ctx = {
-      spec: runtime.spec,
-      surface: "http" as const,
-      runtime,
-    } as unknown as ReadinessContext;
-    assert.equal(AppDb.checkReadiness(ctx), true);
-    (runtime.state.db as AppDb).close();
+    assert.equal(AppDb.checkReadiness(), true);
   });
 });

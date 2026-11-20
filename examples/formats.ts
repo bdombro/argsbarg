@@ -44,12 +44,25 @@ const app = argsbarg({
         const inputs = ctx.inputs;
         const out = {
           inputs,
-          durationMs: ctx.durationOpt("timeout"),
-          tags: ctx.commaListOpt("tags"),
-          on: ctx.dateOpt("on"),
+          durationMs: inputs.timeout,
+          tags: inputs.tags,
+          on: inputs.on,
         };
-        if (ctx.hasFlag("verbose")) {
-          Object.assign(out, { rawOpts: ctx.opts });
+        if (inputs.verbose) {
+          const rawOpts: Record<string, string> = {};
+          const argv = process.argv.slice(2);
+          for (let index = 0; index < argv.length; index++) {
+            const token = argv[index] ?? "";
+            if (token === "-v" || token === "--verbose" || token.startsWith("--verbose=")) {
+              rawOpts.verbose = "1";
+              continue;
+            }
+            const match = token.match(/^--(timeout|tags|on)(?:=(.*))?$/);
+            if (!match) continue;
+            rawOpts[match[1]] = match[2] ?? argv[++index] ?? "";
+          }
+          rawOpts.timeout ??= "30s";
+          Object.assign(out, { rawOpts });
         }
         process.stdout.write(`${JSON.stringify(out, null, 2)}\n`);
       },

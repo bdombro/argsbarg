@@ -1,15 +1,19 @@
-# bash (not sh); -e bail on errors, -u error on unset vars, pipefail fails pipelines when any stage fails
-set shell := ["bash", "-eu", "-o", "pipefail", "-c"]
+# https://github.com/casey/just
+
+set shell := ["zsh", "-eu", "-o", "pipefail", "-c"]
 
 export PATH := justfile_directory() + "/node_modules/.bin:" + env("PATH")
 
-# List available recipes (default)
+# List recipes (default)
 _:
     @just --list
 
 # Rebuild the committed Node bundle that plugins run (commit dist/example-agent-plugin.mjs)
 build:
-    esbuild src/index.ts --bundle --platform=node --target=node20 --format=esm --minify-whitespace --minify-syntax --outfile=dist/example-agent-plugin.mjs
+    esbuild src/index.ts --bundle --platform=node --target=node20 --format=esm --minify-whitespace --minify-syntax --banner:js='#!/usr/bin/env node' --outfile=dist/example-agent-plugin.mjs
+    chmod +x dist/example-agent-plugin.mjs
+    cp -f dist/example-agent-plugin.mjs dist/example-agent-plugin
+    chmod +x dist/example-agent-plugin
 
 # Install the Claude Code plugin from this checkout (restart Claude Code afterwards)
 plugin-claude-install: build

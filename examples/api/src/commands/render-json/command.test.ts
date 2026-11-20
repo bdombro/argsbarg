@@ -7,7 +7,6 @@ const baseSpec: AppSpec = {
   key: "example-api",
   version: "1.0.0",
   description: "Demo.",
-  httpServer: { enabled: true },
   commands: [],
 };
 
@@ -15,13 +14,10 @@ describe("render-json command", () => {
   const spec = renderJsonTestSpec(baseSpec);
   const cli = argsbarg(spec);
 
-  test("HTTP invoke returns echoed message", async () => {
-    const result = await cli.invoke(["render-json"], {
-      invocation: "http",
-      toolArgs: { message: "hello" },
-    });
+  test("returns the echoed document", async () => {
+    const result = await cli.invoke(["render-json", JSON.stringify({ message: "hello" })]);
     assert.equal(result.kind, "ok");
-    assert.deepEqual(result.response?.body, { message: "hello" });
+    assert.deepEqual(JSON.parse(result.stdout), { message: "hello" });
   });
 
   test("rejects invalid input before handler via inputSchema", async () => {
@@ -37,10 +33,7 @@ describe("render-json command", () => {
         }),
       ],
     });
-    const result = await argsbarg(badProgram).invoke(["render-json"], {
-      invocation: "http",
-      toolArgs: { message: 123 },
-    });
+    const result = await argsbarg(badProgram).invoke(["render-json", JSON.stringify({ message: 123 })]);
     assert.equal(result.kind, "error");
     assert.equal(handlerCalled, false);
   });

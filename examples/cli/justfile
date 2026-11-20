@@ -1,9 +1,10 @@
-# bash (not sh); -e bail on errors, -u error on unset vars, pipefail fails pipelines when any stage fails
-set shell := ["bash", "-eu", "-o", "pipefail", "-c"]
+# https://github.com/casey/just
+
+set shell := ["zsh", "-eu", "-o", "pipefail", "-c"]
 
 export PATH := justfile_directory() + "/node_modules/.bin:" + env("PATH")
 
-# List available recipes (default)
+# List recipes (default)
 _:
     @just --list
 

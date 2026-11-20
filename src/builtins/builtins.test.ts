@@ -7,6 +7,7 @@ import { describe, test } from "node:test";
 import type { AppSpec } from "../core/types.ts";
 import { resolveHttpServeConfig, resolveMcpServeConfig } from "../server/overrides.ts";
 import { exportPresentationBuiltins } from "./export.ts";
+import { cliBuiltinHttpCommand } from "./http.ts";
 import { completionBashScript, completionFishScript, completionZshScript } from "./index.ts";
 import { cliBuiltinMcpCommand } from "./mcp.ts";
 import { cliPresentationRoot } from "./presentation.ts";
@@ -15,7 +16,7 @@ const fixture: AppSpec = {
   key: "myapp",
   version: "0.0.0",
   description: "Demo app.",
-  mcpServer: { enabled: true },
+  mcp: { tools: [] },
   commands: [
     {
       key: "hello",
@@ -27,6 +28,15 @@ const fixture: AppSpec = {
 
 /** Tests for builtins help copy. */
 describe("builtins help copy", () => {
+  test("service start aliases are not registered", () => {
+    const http = cliBuiltinHttpCommand(fixture);
+    const mcp = cliBuiltinMcpCommand(fixture);
+    assert.equal(http.fallbackCommand, undefined);
+    assert.equal(mcp.fallbackCommand, undefined);
+    assert.ok(!http.commands.some((command) => command.key === "serve"));
+    assert.ok(!mcp.commands.some((command) => command.key === "serve"));
+  });
+
   test("mcp builtin description is user-facing", () => {
     const mcp = cliBuiltinMcpCommand(fixture);
     assert.ok(mcp.description.includes("MCP server"));
@@ -115,8 +125,8 @@ test("serve configs keep log hooks and expand ~ in log.file", () => {
     key: "myapp",
     version: "0.0.0",
     description: "Demo app.",
-    httpServer: { enabled: true },
-    mcpServer: { enabled: true },
+    http: { routes: [] },
+    mcp: { tools: [] },
     log: { enrich, serialize, file: "~/logs/app.log" },
     commands: [{ key: "hello", description: "Hi.", handler: () => {} }],
   };

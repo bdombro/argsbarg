@@ -1,5 +1,6 @@
-# bash (not sh); -e bail on errors, -u error on unset vars, pipefail fails pipelines when any stage fails
-set shell := ["bash", "-eu", "-o", "pipefail", "-c"]
+# https://github.com/casey/just
+
+set shell := ["zsh", "-eu", "-o", "pipefail", "-c"]
 
 export PATH := justfile_directory() + "/node_modules/.bin:" + env_var("PATH")
 
@@ -9,7 +10,7 @@ tap := "bdombro/bun-argsbarg"
 tap_parent := brew_prefix + "/Library/Taps/" + replace_regex(tap, "/.*", "")
 tap_path := tap_parent + "/homebrew-" + replace_regex(tap, ".*/", "")
 
-# List available recipes (default)
+# List recipes (default)
 _:
     @just --list
 

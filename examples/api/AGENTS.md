@@ -14,13 +14,15 @@ When adding or changing commands, schemas, or MCP exposure:
 **Rules** (details are in the docs above; don't contradict them):
 
 - Reserved root commands: `completion`, `mcp`, `http`, `version`.
-- `argsbarg({ … })` builds the app in `src/app.ts`; `command({ … })` declares every command (typed `ctx.inputs` / `ctx.pathParams`). Give the root, commands, options, and positionals action-oriented `description`s.
-- Omit `mcpTool` unless a command is genuinely CLI-only (`enabled: false`) or hits an irreducible wire limit; fix the schema and headless path first.
-- Interactive commands have one headless path shared by MCP, non-TTY CLI, and `--yes` / `--dry-run` / `--json` (`shouldRunHeadless*`, `requireYesInNonTty`); don't branch on raw `isTTY`.
+- `argsbarg({ … })` builds the app in `src/app.ts`; `command()`, `route()`, `method()`, and `tool()` declare independent surfaces with typed `ctx.inputs`.
+- Do not derive a wire route or tool from a CLI command. Share domain functions, not argv or response shims.
 - String options: `format` / `default` / `pattern` per `cli-program.md`; use `ctx.inputs` for multi-flag commands.
 - Varargs (`argMax: 0`): space-separated on the CLI, a JSON array over MCP; never comma-split positionals.
 - App settings are app code (env vars or your own file); argsbarg doesn't manage them.
 - Multi-surface commands (Ink + headless + MCP): one `read*Flags(ctx)` per command and one `resolve*Input(flags)` for cross-field rules, so every path shares one struct.
+- `cli.guard` and `mcp.guard` are surface policies. Operation guards supplement them; use `{ mode: "override", run }` or `"public"` only when intentionally replacing that default.
+- `mcp.http.middleware` must return `{ kind: "respond", response }` or `{ kind: "next", locals }`. Verify HTTP credentials there; local MCP callers must derive credentials only from the `env` source.
+- Keep this template standalone. Mount `children` only for a real app-composition need, with exact keys and intentional exposure.
 - Schemas live at the top of the command's `command.ts` (a sibling `schemas.ts` only when shared or large): export the Zod schema and a same-named `z.infer` type. Prefer `z.strictObject`; document every field with `.describe("…")` (agents read it; JSDoc isn't emitted).
 
 ## Code conventions
@@ -38,7 +40,7 @@ When adding or changing commands, schemas, or MCP exposure:
 | `src/index.ts` | Entry: `await app.run()` | Command handlers, business logic |
 | `src/app.ts` | App spec: `commands: […]` (alphabetical by key) | Command handlers, business logic |
 | `src/create-identity.ts` | Key, release repo, description (rewritten by `argsbarg create`) | Anything else |
-| `src/types/` | Module augmentations (`argsbarg.d.ts`: `Locals`, `ServerState`) | Runtime logic |
+| `src/types/` | Module augmentations (`argsbarg.d.ts`: `Locals`) | Runtime logic |
 | `src/db/` | `AppDb` (SQLite connect, migrate, domain access), `migrations/*.sql` | Command handlers |
 | `src/commands/<name>/` | One command: `command.ts` (with its Zod schemas), colocated `*.test.ts` | Shared helpers (lift them out) |
 | `scripts/` | Dev tooling (release) | Production command paths |

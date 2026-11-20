@@ -36,5 +36,5 @@ example-cli <subcommand> [options] [args]
 
 ## Install location
 
-- **Agent plugin:** plugins built with `example-cli mcp bundle` ship this skill.
+- **Agent plugin:** plugins built with `example-cli mcp bundle` launch `serve mcp --stdio` and ship this skill.
 - **Manual:** copy or symlink `skills/example-cli/` into your agent's skill directory (for example `~/.agents/skills/example-cli/` or `~/.claude/skills/example-cli/`).

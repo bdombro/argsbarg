@@ -1,35 +1,29 @@
 /*
-Tests for the Zod schema adapter and the argsbarg 8 schema contract: typed leaves via command, parsed inputs,
-startup emission errors, strictness warnings, and migration errors for argsbarg 7 JSON Schema configs.
+Regression tests for the v9 Zod adapter and direct CLI declaration boundary.
+They verify one schema emission, parsed defaults, strict typing, and flat path inputs.
 */
 
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import { z } from "zod";
-import { executeHeadlessToolCall } from "../headless/tool-call.ts";
-import { generateOpenApi } from "../http/openapi.ts";
 import { argsbarg } from "../index.ts";
-import { collectMcpTools, type McpToolDef, mcpToolCallToArgv } from "../mcp/tools.ts";
 import { type AppSpec, command, SchemaValidationError } from "./types.ts";
 import { cliValidateProgram, schemaStrictnessWarnings } from "./validate.ts";
 import { isZodObjectSchema, isZodSchema, toJsonSchema, validateWithSchema } from "./zod-schema.ts";
 
-/** Discriminated union used by the typed-leaf tests. */
+/** Discriminated union used for direct command inference checks. */
 const Shape = z.discriminatedUnion("kind", [
   z.strictObject({ kind: z.literal("circle"), radius: z.number() }),
   z.strictObject({ kind: z.literal("rect"), width: z.number(), height: z.number() }),
 ]);
 
-/** Minimal program wrapping one leaf. */
-function programWith(
-  /** Leaf definition under test. */
-  leaf: object,
-): AppSpec {
+/** Wraps one leaf declaration as a minimal app. */
+function programWith(leaf: object): AppSpec {
   return { key: "zapp", version: "1.0.0", description: "Zod tests.", commands: [leaf] } as AppSpec;
 }
 
 describe("schema adapter", () => {
-  test("toJsonSchema emits draft 2020-12 and memoizes per io side", () => {
+  test("emits draft 2020-12 and memoizes per input/output side", () => {
     const schema = z.strictObject({ n: z.number().default(1).describe("A number.") });
     const input = toJsonSchema(schema, "input");
     assert.equal(input.$schema, "https://json-schema.org/draft/2020-12/schema");
@@ -39,21 +33,21 @@ describe("schema adapter", () => {
     assert.equal(Object.isFrozen(input), true);
   });
 
-  test("validateWithSchema returns the parsed value on success", () => {
-    const result = validateWithSchema(z.strictObject({ n: z.number().default(7) }), {});
-    assert.deepEqual(result, { valid: true, value: { n: 7 }, errors: [] });
-  });
-
-  test("isZodSchema is duck-typed and rejects JSON Schema objects", () => {
+  test("returns parsed Zod values and identifies schemas", () => {
+    assert.deepEqual(validateWithSchema(z.strictObject({ n: z.number().default(7) }), {}), {
+      valid: true,
+      value: { n: 7 },
+      errors: [],
+    });
     assert.equal(isZodSchema(z.string()), true);
-    assert.equal(isZodSchema({ type: "object", properties: {} }), false);
+    assert.equal(isZodSchema({ type: "object" }), false);
     assert.equal(isZodObjectSchema(z.object({})), true);
     assert.equal(isZodObjectSchema(z.string()), false);
   });
 });
 
 describe("command", () => {
-  test("types ctx.inputs from inputSchema and narrows discriminated unions", async () => {
+  test("types inputs from a schema and applies defaults", async () => {
     const area = command({
       key: "area",
       description: "Area.",
@@ -62,10 +56,8 @@ describe("command", () => {
       outputSchema: z.strictObject({ area: z.number() }),
       handler: (ctx) => {
         const shape = ctx.inputs;
-        if (shape.kind === "circle") {
-          return { area: Math.PI * shape.radius ** 2 };
-        }
-        // @ts-expect-error radius does not exist on the rect branch
+        if (shape.kind === "circle") return { area: Math.PI * shape.radius ** 2 };
+        // @ts-expect-error radius exists only on the circle branch.
         void shape.radius;
         return { area: shape.width * shape.height };
       },
@@ -74,214 +66,51 @@ describe("command", () => {
       key: "bad",
       description: "Bad.",
       outputSchema: z.strictObject({ area: z.number() }),
-      // @ts-expect-error handler return must match outputSchema (no overload accepts it)
+      // @ts-expect-error the handler return must match outputSchema.
       handler: () => ({ area: "x" }),
     });
-
-    const cli = argsbarg(programWith(area));
-    const result = await cli.invoke(["area"], {
-      invocation: "mcp",
-      toolArgs: { kind: "rect", width: 2, height: 3 },
-    });
+    const result = await argsbarg(programWith(area)).invoke([
+      "area",
+      JSON.stringify({ kind: "rect", width: 2, height: 3 }),
+    ]);
     assert.equal(result.kind, "ok");
-    assert.deepEqual(result.response?.body, { area: 6 });
+    assert.deepEqual(JSON.parse(result.stdout), { area: 6 });
   });
 
-  test("ctx.inputs is the parsed output with defaults applied", async () => {
-    const leaf = command({
-      key: "greet",
-      description: "Greet.",
-      kind: "document",
-      inputSchema: z.strictObject({ name: z.string(), greeting: z.string().default("hello") }),
-      handler: (ctx) => `${ctx.inputs.greeting} ${ctx.inputs.name}`,
+  test("merges CLI path captures into flat inputs", async () => {
+    const get = command({
+      key: "get",
+      description: "Get one.",
+      handler: (ctx) => ({ id: (ctx.inputs as Record<string, string>).id }),
     });
-    const cli = argsbarg(programWith(leaf));
-    const result = await cli.invoke(["greet"], { invocation: "mcp", toolArgs: { name: "ada" } });
+    const app = argsbarg({
+      key: "paths",
+      version: "1.0.0",
+      description: "Paths.",
+      commands: [{ key: "items", description: "Items.", commands: [{ key: ":id", description: "One.", commands: [get] }] }],
+    });
+    const result = await app.invoke(["items", "i-7", "get"]);
     assert.equal(result.kind, "ok");
-    assert.equal(result.response?.body, "hello ada");
+    assert.deepEqual(JSON.parse(result.stdout), { id: "i-7" });
   });
 });
 
-describe("path parameters", () => {
-  test("undeclared :param values skip strict validation and merge into ctx.inputs", async () => {
-    const put = command({
-      key: "put",
-      description: "Replace.",
-      inputSchema: z.strictObject({ name: z.string() }),
-      handler: (ctx) => ({ id: ctx.pathParams.id, merged: ctx.inputs, name: ctx.inputs.name }),
-    });
-    const program = {
-      key: "papp",
-      version: "1.0.0",
-      description: "Path params.",
-      commands: [
-        { key: "items", description: "Items.", commands: [{ key: ":id", description: "One.", commands: [put] }] },
-      ],
-    } as AppSpec;
-    const cli = argsbarg(program);
-    const result = await cli.invoke(["items", "abc", "put"], { invocation: "mcp", toolArgs: { name: "b" } });
-    assert.equal(result.kind, "ok");
-    assert.deepEqual(result.response?.body, { id: "abc", merged: { name: "b", id: "abc" }, name: "b" });
-  });
-});
-
-describe("declared pathParams", () => {
-  /** App spec with `items/:id/get`, the leaf declaring or omitting `pathParams`. */
-  function itemsProgram(declare: boolean): AppSpec {
-    const get = declare
-      ? command({
-          key: "get",
-          description: "Get one item.",
-          pathParams: z.strictObject({
-            id: z
-              .string()
-              .regex(/^i-\d+$/)
-              .describe("Item id (i-<n>)."),
-          }),
-          handler: (ctx) => {
-            const id: string = ctx.pathParams.id;
-            // @ts-expect-error only declared params exist
-            void ctx.pathParams.other;
-            return { id };
-          },
-        })
-      : command({ key: "get", description: "Get one item.", handler: (ctx) => ({ id: ctx.pathParams.id }) });
-    return {
-      key: "papp",
-      version: "1.0.0",
-      description: "Path params.",
-      mcpServer: { enabled: true },
-      httpServer: { enabled: true },
-      commands: [
-        { key: "items", description: "Items.", commands: [{ key: ":id", description: "One.", commands: [get] }] },
-      ],
-    } as AppSpec;
-  }
-
-  test("validates and types ctx.pathParams", async () => {
-    const cli = argsbarg(itemsProgram(true));
-    const ok = await cli.invoke(["items", "i-7", "get"], { invocation: "mcp" });
-    assert.deepEqual(ok.response?.body, { id: "i-7" });
-    const bad = await cli.invoke(["items", "nope", "get"], { invocation: "mcp" });
-    assert.equal(bad.kind, "error");
-    assert.ok((bad.errorMsg ?? "").includes("id:"));
-  });
-
-  test("MCP tools list path params (described when declared) and route calls to the given value", async () => {
-    for (const declare of [true, false]) {
-      const program = itemsProgram(declare);
-      const tool = collectMcpTools(program).find((t) => t.name.endsWith("get")) as McpToolDef;
-      assert.deepEqual(tool.inputSchema.required, ["id"]);
-      const idProp = (tool.inputSchema.properties as Record<string, Record<string, unknown>>).id;
-      assert.equal(idProp?.description, declare ? "Item id (i-<n>)." : "Path parameter `:id`.");
-      const call = await executeHeadlessToolCall(argsbarg(program), tool, { id: "i-3" }, "mcp");
-      assert.deepEqual(call.ok && call.response.body, { id: "i-3" });
-      assert.deepEqual(mcpToolCallToArgv(program, tool, {}), { error: "Missing path parameter: id" });
-    }
-  });
-
-  test("OpenAPI path parameters carry pathParams descriptions", () => {
-    const doc = generateOpenApi(itemsProgram(true)) as {
-      paths: Record<string, { get: { parameters: Array<Record<string, unknown>> } }>;
-    };
-    const [, item] = Object.entries(doc.paths).find(([path]) => path.includes("{id}")) ?? [];
-    const param = item?.get.parameters.find((p) => p.name === "id");
-    assert.partialDeepStrictEqual(param, {
-      in: "path",
-      required: true,
-      description: "Item id (i-<n>).",
-      schema: { type: "string" },
-    });
-  });
-
-  test("startup rejects pathParams that don't match the route or clash with inputSchema", () => {
-    const leaf = (extra: object) => ({ key: "get", description: "Get.", handler: () => {}, ...extra });
-    const program = (l: object) =>
-      ({
-        key: "papp",
-        version: "1.0.0",
-        description: "Path params.",
-        commands: [
-          { key: "items", description: "Items.", commands: [{ key: ":id", description: "One.", commands: [l] }] },
-        ],
-      }) as AppSpec;
-    assert.throws(
-      () => cliValidateProgram(program(leaf({ pathParams: z.strictObject({ uid: z.string() }) }))),
-      /must declare exactly the path parameters \[id\]/,
-    );
-    assert.throws(
-      () =>
-        cliValidateProgram(
-          program(
-            leaf({
-              pathParams: z.strictObject({ id: z.string() }),
-              kind: "document",
-              inputSchema: z.strictObject({ id: z.string() }),
-            }),
-          ),
-        ),
-      /id is also declared by inputSchema/,
-    );
-  });
-});
-
-describe("program validation", () => {
-  test("unrepresentable schemas fail at startup and name the leaf", () => {
-    const leaf = {
-      key: "when",
-      description: "When.",
-      kind: "document",
-      inputSchema: z.strictObject({ at: z.date() }),
-      handler: () => {},
-    };
-    assert.throws(
-      () => cliValidateProgram(programWith(leaf)),
-      /inputSchema on when cannot be represented as JSON Schema/,
-    );
-  });
-
-  test("JSON Schema inputSchema values get a migration error", () => {
-    const leaf = {
-      key: "old",
-      description: "Old.",
-      kind: "document",
-      inputSchema: { type: "object" },
-      handler: () => {},
-    };
-    assert.throws(() => cliValidateProgram(programWith(leaf)), SchemaValidationError);
-    assert.throws(() => cliValidateProgram(programWith(leaf)), /inputSchema on old must be a Zod schema/);
-  });
-
-  test("removed root fields get a migration error", () => {
-    const base = { key: "cfg", version: "1.0.0", description: "Cfg.", handler: () => {} };
-    assert.throws(
-      () => cliValidateProgram({ ...base, appConfig: { entries: {} } } as unknown as AppSpec),
-      /appConfig is no longer supported/,
-    );
-    assert.throws(
-      () => cliValidateProgram({ ...base, configure: {} } as unknown as AppSpec),
-      /configure is no longer supported/,
-    );
-  });
-
-  test("strictness warnings flag input objects that accept unknown keys", () => {
-    const program = {
-      key: "warn",
-      version: "1.0.0",
-      description: "Warn.",
-      commands: [
-        {
-          key: "loose",
-          description: "Loose.",
-          kind: "document",
-          inputSchema: z.object({ a: z.string() }),
-          handler: () => {},
-        },
-        { key: "tight", description: "Tight.", kind: "document", inputSchema: Shape, handler: () => {} },
-      ],
-    } as AppSpec;
-    const warnings = schemaStrictnessWarnings(program);
-    assert.equal(warnings.length, 1);
-    assert.ok(warnings[0].includes("inputSchema on loose accepts unknown keys at $"));
-  });
+test("startup emits and reports schemas without mutating them", () => {
+  const strict = z.strictObject({});
+  const loose = z.object({});
+  const app = {
+    key: "schemas",
+    version: "1.0.0",
+    description: "Schemas.",
+    commands: [
+      command({ key: "strict", description: "Strict.", inputSchema: strict, handler: () => {} }),
+      command({ key: "loose", description: "Loose.", inputSchema: loose, handler: () => {} }),
+    ],
+  } satisfies AppSpec;
+  cliValidateProgram(app);
+  assert.match(schemaStrictnessWarnings(app)[0] ?? "", /loose/);
+  assert.throws(
+    () => cliValidateProgram({ ...app, version: "", commands: [] }),
+    (error) => error instanceof SchemaValidationError,
+  );
 });

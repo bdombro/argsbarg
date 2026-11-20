@@ -6,6 +6,7 @@ import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import type { AppSpec } from "../core/types.ts";
 import { type ResolvedLogConfig, resolveLogConfig } from "../log/emitter.ts";
+import type { HttpListenTarget } from "./listener.ts";
 
 /** Overrides from `myapp http` / `serveHttp()` flags and embedders. */
 export interface ServeOverrides {
@@ -21,8 +22,7 @@ export interface ServeOverrides {
 
 /** Resolved HTTP listen and error options after merging schema + overrides. */
 export interface ResolvedHttpServeConfig {
-  hostname: string;
-  port: number;
+  targets: readonly [HttpListenTarget, ...HttpListenTarget[]];
   trustProxy: boolean;
   obscureUnexpected: boolean;
   log: ResolvedLogConfig;
@@ -46,11 +46,16 @@ function resolveLogFile(logFile: string | undefined): string | undefined {
 
 /** Builds resolved HTTP server config (CLI flags > program schema). */
 export function resolveHttpServeConfig(program: AppSpec, overrides: ServeOverrides = {}): ResolvedHttpServeConfig {
-  const http = program.httpServer;
-  const obscureUnexpected = overrides.obscureErrors ?? http?.errors?.obscureUnexpected ?? false;
+  const http = program.http;
+  const obscureUnexpected = overrides.obscureErrors ?? false;
   return {
-    hostname: overrides.host ?? http?.host ?? "127.0.0.1",
-    port: overrides.port ?? http?.port ?? 3000,
+    targets: [
+      {
+        kind: "tcp",
+        host: overrides.host ?? http?.host ?? "127.0.0.1",
+        port: overrides.port ?? http?.port ?? 3000,
+      },
+    ],
     trustProxy: overrides.trustProxy ?? http?.trustProxy ?? false,
     obscureUnexpected,
     log: resolveLogConfig(program, {
@@ -64,9 +69,8 @@ export function resolveHttpServeConfig(program: AppSpec, overrides: ServeOverrid
 
 /** Builds resolved MCP server config (CLI flags > program schema). */
 export function resolveMcpServeConfig(program: AppSpec, overrides: ServeOverrides = {}): ResolvedMcpServeConfig {
-  const mcp = program.mcpServer;
   return {
-    obscureUnexpected: overrides.obscureErrors ?? mcp?.errors?.obscureUnexpected ?? false,
+    obscureUnexpected: overrides.obscureErrors ?? false,
     log: resolveLogConfig(program, {
       format: overrides.logFormat,
       file: resolveLogFile(overrides.logFile ?? program.log?.file),

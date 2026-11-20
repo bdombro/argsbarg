@@ -17,13 +17,34 @@ Ex API Response:
 */
 
 import pkg from "../package.json" with { type: "json" };
-import { OptionKind, command, argsbarg } from "../src/index.ts";
+import { method, OptionKind, allow, route, tool, command, argsbarg } from "../src/index.ts";
+import { z } from "zod";
+
+declare module "../src/index.ts" {
+  interface Locals {
+    /** Verified caller label established by the active demo entry point. */
+    readonly caller?: string;
+  }
+}
+
+/** Native wire input shared by the explicit service declarations. */
+const HelloInput = z.strictObject({
+  name: z.string().optional(),
+  verbose: z.boolean().optional(),
+});
 
 const app = argsbarg({
+  cli: {
+    guard: (ctx) =>
+      allow({
+        caller: ctx.source === "local" ? (ctx.env.get("DEMO_CALLER") ?? "local-demo") : "unknown-demo",
+      }),
+  },
   commands: [
     command({
       key: "hello",
       description: "Say hello.",
+      guard: () => allow(),
       positionals: [
         {
           name: "name",
@@ -42,23 +63,64 @@ const app = argsbarg({
         },
       ],
       handler: (ctx) => {
-        const name = ctx.args[0] ?? "world";
-        if (ctx.hasFlag("verbose") && ctx.invocation === "cli") {
+        const name = ctx.inputs.name ?? "world";
+        if (ctx.inputs.verbose && ctx.surface === "cli") {
           console.log("verbose mode");
         }
         const greeting = `hello ${name}`;
-        if (ctx.invocation === "cli") {
+        if (ctx.surface === "cli") {
           console.log(greeting);
           return;
         }
-        return { greeting, verbose: ctx.hasFlag("verbose") };
+        return { greeting, verbose: ctx.inputs.verbose };
       },
     }),
   ],
   description: "Tiny demo.",
-  httpServer: { enabled: true },
+  http: {
+    routes: [
+      route()({
+        body: HelloInput,
+        description: "Say hello.",
+        handler: ({ inputs }) => ({ greeting: `hello ${inputs.name ?? "world"}`, verbose: inputs.verbose ?? false }),
+        id: "hello",
+        method: "POST",
+        outputSchema: z.strictObject({ greeting: z.string(), verbose: z.boolean() }),
+        path: "/hello",
+      }),
+    ],
+  },
+  jsonRpc: {
+    methods: [
+      method()({
+        name: "hello",
+        description: "Say hello.",
+        inputSchema: HelloInput,
+        handler: ({ inputs }) => ({ greeting: `hello ${inputs.name ?? "world"}`, verbose: inputs.verbose ?? false }),
+      }),
+    ],
+  },
   key: "servers.ts",
-  mcpServer: { enabled: true },
+  mcp: {
+    guard: ({ locals }) => allow({ caller: locals.caller ?? "local-demo" }),
+    http: {
+      middleware: (_request, { headers }) => ({
+        kind: "next",
+        locals: {
+          caller: headers.get("X-Demo-Caller") ?? "http-demo",
+        },
+      }),
+    },
+    tools: [
+      tool()({
+        name: "hello",
+        description: "Say hello.",
+        guard: () => allow(),
+        inputSchema: HelloInput,
+        handler: ({ inputs }) => ({ greeting: `hello ${inputs.name ?? "world"}`, verbose: inputs.verbose ?? false }),
+      }),
+    ],
+  },
   version: pkg.version,
 });
 

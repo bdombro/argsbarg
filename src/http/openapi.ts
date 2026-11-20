@@ -1,268 +1,215 @@
 /*
-Hand-built OpenAPI 3.1 document from exposed HTTP REST routes.
+Generates OpenAPI 3.1 documents from explicit REST route catalogs.
+The discovery document and dispatch catalog share one fixed registration snapshot.
 */
 
-import type { AppSpec, Command, HttpMethod } from "../core/types.ts";
-import { hasHandler, isDocumentCommand, leafOutputSchema } from "../core/types.ts";
-import { buildCommandInputSchema, commandWireOptions } from "../core/wire-schema.ts";
-import { toJsonSchema } from "../core/zod-schema.ts";
-import { collectHttpRoutes, defaultSuccessStatus } from "./routes.ts";
+import type { HttpRouteCatalog, RegisteredHttpRoute } from "./routes.ts";
+import { defaultSuccessStatus } from "./routes.ts";
 import { dereferenceJsonSchema } from "./schema-deref.ts";
+import { toJsonSchema } from "../core/zod-schema.ts";
 
-const JSON_CONTENT_TYPE = "application/json; charset=utf-8";
-
-function defaultErrorSchema(): Record<string, unknown> {
-  return {
-    type: "object",
-    properties: { error: { type: "string" } },
-    required: ["error"],
-  };
+/** Required identity for a catalog-owned OpenAPI document. */
+export interface HttpCatalogOpenApiOptions {
+  /** OpenAPI document title. */
+  title: string;
+  /** OpenAPI document version. */
+  version: string;
+  /** Optional document description. */
+  description?: string;
 }
 
-function errorResponseSchema(program: AppSpec): Record<string, unknown> {
-  const custom = program.httpServer?.errors?.errorSchema;
-  return custom ? dereferenceJsonSchema(toJsonSchema(custom, "output")) : defaultErrorSchema();
-}
-
-function errorResponseEntry(program: AppSpec, description: string): Record<string, unknown> {
-  return {
-    description,
-    content: {
-      [JSON_CONTENT_TYPE]: {
-        schema: errorResponseSchema(program),
-      },
-    },
-  };
-}
-
-/** Builds success response entries for OpenAPI (status → response object). */
-function buildSuccessResponses(route: ReturnType<typeof collectHttpRoutes>[number]): Record<string, unknown> {
-  const contentType = route.leaf.http?.successContentType ?? "application/json";
-  const media: Record<string, unknown> = {};
-  const method = route.method;
-
-  if (contentType.includes("application/json")) {
-    const outputSchema = leafOutputSchema(route.leaf) ?? { type: "object" };
-    media[contentType] = {
-      schema: dereferenceJsonSchema(outputSchema),
-    };
-  } else if (contentType.includes("text/html")) {
-    media[contentType] = { schema: { type: "string" } };
-  } else {
-    media[contentType] = { schema: { type: "string", format: "binary" } };
-  }
-
-  const status = String(route.leaf.http?.successStatus ?? defaultSuccessStatus(method, method !== "DELETE"));
-  if (method === "DELETE" && status === "204") {
-    return {
-      "204": { description: "Successful invocation" },
-    };
-  }
-  return {
-    [status]: {
-      description: "Successful invocation",
-      content: media,
-    },
-  };
-}
-
-function methodLower(method: HttpMethod): string {
-  return method.toLowerCase();
-}
-
-const HEALTH_TAG = "health";
-
-const livenessResponseSchema = {
-  type: "object",
-  properties: { ok: { type: "boolean", const: true } },
-  required: ["ok"],
-} as const;
-
-const readinessCheckSchema = {
+/** Standard REST error shape for invocation-level failures. */
+const HTTP_ERROR_SCHEMA = {
   type: "object",
   properties: {
-    ok: { type: "boolean" },
-    error: { type: "string" },
-    missing: { type: "array", items: { type: "string" } },
-  },
-  required: ["ok"],
-} as const;
-
-const readinessResponseSchema = {
-  type: "object",
-  properties: {
-    ok: { type: "boolean" },
-    checks: {
+    error: {
       type: "object",
       properties: {
-        config_file: readinessCheckSchema,
-        config_required: readinessCheckSchema,
-        custom: readinessCheckSchema,
+        code: { type: "string" },
+        message: { type: "string" },
+        details: {},
       },
-      required: ["config_file", "config_required", "custom"],
+      required: ["code", "message"],
     },
   },
-  required: ["ok", "checks"],
+  required: ["error"],
 } as const;
 
-function jsonResponseEntry(description: string, schema: Record<string, unknown>): Record<string, unknown> {
+/** Builds one schema-bearing response entry. */
+function jsonResponse(
+  /** Response description. */
+  description: string,
+  /** Optional response schema. */
+  schema?: Record<string, unknown>,
+  /** Response media type. */
+  contentType = "application/json; charset=utf-8",
+): Record<string, unknown> {
   return {
     description,
-    content: {
-      [JSON_CONTENT_TYPE]: { schema },
-    },
+    ...(schema === undefined ? {} : { content: { [contentType]: { schema } } }),
   };
 }
 
-function livenessGetOp(): Record<string, unknown> {
-  return {
-    tags: [HEALTH_TAG],
-    operationId: "health_liveness",
-    summary: "Liveness probe",
-    description:
-      "Returns 200 when the HTTP server is online and accepting requests. Does not run config or readiness checks — use for orchestrator liveness probes only.",
-    responses: {
-      "200": jsonResponseEntry("Server is online", livenessResponseSchema),
-    },
-  };
+/** Converts an object schema into its dereferenced property map. */
+function objectProperties(schema: import("zod").ZodObject): Record<string, Record<string, unknown>> {
+  const properties = dereferenceJsonSchema(toJsonSchema(schema, "input")).properties;
+  return typeof properties === "object" && properties !== null
+    ? (properties as Record<string, Record<string, unknown>>)
+    : {};
 }
 
-/** Framework health probe paths served alongside user command routes. */
-function buildHealthPaths(): Record<string, unknown> {
-  return {
-    "/health/liveness": {
-      get: livenessGetOp(),
-    },
-    "/health/readiness": {
-      get: {
-        tags: [HEALTH_TAG],
-        operationId: "health_readiness",
-        summary: "Readiness probe",
-        description:
-          "Returns 200 when the server is online and the optional program.readiness check passes. Returns 503 when any check fails — use for orchestrator readiness probes before routing traffic.",
-        responses: {
-          "200": jsonResponseEntry("Online and ready to serve traffic", readinessResponseSchema),
-          "503": jsonResponseEntry("Online but not ready (one or more checks failed)", readinessResponseSchema),
-        },
-      },
-    },
-  };
+/** Returns the required property names from one Zod object schema. */
+function objectRequired(schema: import("zod").ZodObject): ReadonlySet<string> {
+  const required = dereferenceJsonSchema(toJsonSchema(schema, "input")).required;
+  return new Set(Array.isArray(required) ? (required as string[]) : []);
 }
 
-type HttpRoute = ReturnType<typeof collectHttpRoutes>[number];
-
-/** Top-level command key for OpenAPI grouping (first non-`:param` segment). */
-function topLevelCommandKey(route: HttpRoute, program: AppSpec): string {
-  const key = route.commandPath.find((k) => !k.startsWith(":"));
-  return key ?? program.key;
-}
-
-function findTopLevelCommand(program: AppSpec, key: string): Command | undefined {
-  if (hasHandler(program)) {
-    return program.key === key ? program : undefined;
-  }
-  return program.commands.find((c) => c.key === key);
-}
-
-/** OpenAPI tags for user command routes, one per top-level command. */
-function collectCommandTags(program: AppSpec, routes: HttpRoute[]): { name: string; description?: string }[] {
-  const names = [...new Set(routes.map((route) => topLevelCommandKey(route, program)))].sort();
-  return names.map((name) => {
-    const node = findTopLevelCommand(program, name);
-    return node?.description ? { name, description: node.description } : { name };
-  });
-}
-
-/** Generates an OpenAPI 3.1 document for the program's HTTP routes. */
-export function generateOpenApi(program: AppSpec): Record<string, unknown> {
-  const routes = collectHttpRoutes(program);
-  const paths: Record<string, unknown> = program.httpServer?.enabled ? buildHealthPaths() : {};
-  const commandTags = collectCommandTags(program, routes);
-
-  for (const route of routes) {
-    const pathKey = route.openApiPath;
-    const existing = (paths[pathKey] as Record<string, unknown> | undefined) ?? {};
-    const op: Record<string, unknown> = {
-      tags: [topLevelCommandKey(route, program)],
-      operationId: route.openApiPath.replace(/\//g, "_").replace(/[{}]/g, ""),
-      summary: route.leaf.description ?? route.leaf.key,
-      responses: {
-        ...buildSuccessResponses(route),
-        "400": errorResponseEntry(program, "Invalid arguments or help requested"),
-        "404": errorResponseEntry(program, "Not found"),
-        "500": errorResponseEntry(program, "Handler error"),
-      },
-    };
-
-    if (route.paramNames.length > 0) {
-      const declared =
-        route.leaf.pathParams === undefined
-          ? undefined
-          : (dereferenceJsonSchema(toJsonSchema(route.leaf.pathParams, "input")).properties as
-              | Record<string, Record<string, unknown>>
-              | undefined);
-      op.parameters = route.paramNames.map((name) => {
-        const { description, ...schema } = declared?.[name] ?? { type: "string" };
-        return {
-          name,
-          in: "path",
-          required: true,
-          ...(typeof description === "string" ? { description } : {}),
-          schema,
-        };
+/** Builds exact path and query parameter entries for one route. */
+function routeParameters(route: RegisteredHttpRoute): Record<string, unknown>[] {
+  const parameters: Record<string, unknown>[] = [];
+  if (route.spec.pathParams !== undefined) {
+    const properties = objectProperties(route.spec.pathParams);
+    for (const name of route.paramNames) {
+      const { description, ...schema } = properties[name] ?? { type: "string" };
+      parameters.push({
+        name,
+        in: "path",
+        required: true,
+        ...(typeof description === "string" ? { description } : {}),
+        schema,
       });
     }
-
-    const method = methodLower(route.method);
-    if (method === "get" || method === "delete") {
-      op.parameters = [
-        ...((op.parameters as unknown[]) ?? []),
-        ...commandWireOptions(route.leaf).map((opt) => ({
-          name: opt.name,
-          in: "query",
-          required: opt.required ?? false,
-          schema: { type: "string" },
-          description: opt.description,
-        })),
-      ];
-    } else {
-      op.requestBody = {
-        required: isDocumentCommand(route.leaf),
-        content: {
-          [JSON_CONTENT_TYPE]: {
-            schema: dereferenceJsonSchema(buildCommandInputSchema(route.leaf)),
-          },
-        },
-      };
-    }
-
-    existing[method] = op;
-    paths[pathKey] = existing;
   }
+  if (route.spec.queryParams !== undefined) {
+    const properties = objectProperties(route.spec.queryParams);
+    const required = objectRequired(route.spec.queryParams);
+    for (const [name, property] of Object.entries(properties)) {
+      const { description, ...schema } = property;
+      parameters.push({
+        name,
+        in: "query",
+        required: required.has(name),
+        style: "form",
+        explode: true,
+        ...(typeof description === "string" ? { description } : {}),
+        schema,
+      });
+    }
+  }
+  return parameters;
+}
 
+/** Builds the optional JSON request body from the route's body schema. */
+function requestBody(route: RegisteredHttpRoute): Record<string, unknown> | undefined {
+  if (route.spec.body === undefined) return undefined;
+  return {
+    required: false,
+    content: {
+      "application/json": {
+        schema: dereferenceJsonSchema(toJsonSchema(route.spec.body, "input")),
+      },
+    },
+  };
+}
+
+/** Builds ordinary, native, and standard error responses for one route. */
+function responses(route: RegisteredHttpRoute): Record<string, unknown> {
+  const result: Record<string, unknown> = {};
+  for (const response of route.spec.responses ?? []) {
+    const schema =
+      response.schema === undefined ? undefined : dereferenceJsonSchema(toJsonSchema(response.schema, "output"));
+    result[String(response.status)] = jsonResponse(
+      response.description,
+      schema,
+      response.contentType ?? "application/json; charset=utf-8",
+    );
+    if (response.headers !== undefined && response.headers.length > 0) {
+      (result[String(response.status)] as Record<string, unknown>).headers = Object.fromEntries(
+        response.headers.map((name) => [name, { schema: { type: "string" } }]),
+      );
+    }
+  }
+  if (route.spec.outputSchema !== undefined) {
+    const status = route.spec.response?.status ?? defaultSuccessStatus(route.spec.method, true);
+    result[String(status)] = jsonResponse(
+      "Successful invocation",
+      dereferenceJsonSchema(toJsonSchema(route.spec.outputSchema, "output")),
+    );
+  }
+  for (const status of ["400", "403", "404", "415", "500"] as const) {
+    result[status] ??= jsonResponse(
+      status === "400"
+        ? "Invalid REST input"
+        : status === "403"
+          ? "Invocation denied"
+          : status === "404"
+            ? "No route matched"
+            : status === "415"
+              ? "Unsupported body media type"
+              : "Unexpected invocation failure",
+      HTTP_ERROR_SCHEMA as unknown as Record<string, unknown>,
+    );
+  }
+  return result;
+}
+
+/** Generates one OpenAPI document from the immutable explicit REST catalog. */
+export function generateHttpCatalogOpenApi(
+  /** Fixed route snapshot shared with dispatch. */
+  catalog: HttpRouteCatalog,
+  /** Stable application identity. */
+  info: HttpCatalogOpenApiOptions,
+): Record<string, unknown> {
+  const paths: Record<string, Record<string, unknown>> = {};
+  const tags = new Set<string>();
+  for (const route of catalog.routes) {
+    if (route.spec.hidden) continue;
+    const routeTags = route.spec.tags ?? [
+      route.spec.path.split("/").find((segment) => segment.length > 0 && !segment.startsWith(":")) ?? route.spec.id,
+    ];
+    for (const tag of routeTags) tags.add(tag);
+    const operation: Record<string, unknown> = {
+      tags: [...routeTags],
+      operationId: route.spec.id,
+      description: route.spec.description,
+      responses: responses(route),
+    };
+    const parameters = routeParameters(route);
+    if (parameters.length > 0) operation.parameters = parameters;
+    const body = requestBody(route);
+    if (body !== undefined) operation.requestBody = body;
+    const pathItem = paths[route.openApiPath] ?? {};
+    pathItem[route.spec.method.toLowerCase()] = operation;
+    paths[route.openApiPath] = pathItem;
+  }
   return {
     openapi: "3.1.0",
     info: {
-      title: program.key,
-      version: program.version,
-      description: program.description,
+      title: info.title,
+      version: info.version,
+      ...(info.description === undefined ? {} : { description: info.description }),
     },
-    ...(program.httpServer?.enabled
-      ? {
-          tags: [
-            {
-              name: HEALTH_TAG,
-              description: "Orchestrator health probes — liveness (online) vs readiness (online + checks passed).",
-            },
-            ...commandTags,
-          ],
-        }
-      : {}),
+    tags: [...tags].sort().map((name) => ({ name })),
     paths,
   };
 }
 
-/** Pretty-printed OpenAPI JSON (same document as `GET /openapi.json`). */
-export function openApiJson(program: AppSpec): string {
-  return `${JSON.stringify(generateOpenApi(program), null, 2)}\n`;
+/** Generates the public OpenAPI document for one explicit route catalog. */
+export function generateOpenApi(
+  /** Fixed route catalog. */
+  catalog: HttpRouteCatalog,
+  /** Stable application identity. */
+  info: HttpCatalogOpenApiOptions,
+): Record<string, unknown> {
+  return generateHttpCatalogOpenApi(catalog, info);
+}
+
+/** Returns a pretty-printed catalog-owned OpenAPI document. */
+export function openApiJson(
+  /** Fixed route catalog. */
+  catalog: HttpRouteCatalog,
+  /** Stable application identity. */
+  info: HttpCatalogOpenApiOptions,
+): string {
+  return `${JSON.stringify(generateOpenApi(catalog, info), null, 2)}\n`;
 }

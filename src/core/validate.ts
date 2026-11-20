@@ -3,11 +3,9 @@ This module validates CLI schemas before execution.
 */
 
 import type { z } from "zod";
-import { HTTP_RESERVED_TOP_LEVEL_SEGMENTS } from "../http/paths.ts";
-import { collectMcpTools } from "../mcp/tools.ts";
 import { reservedCommandNames, resolveCapabilities } from "../runtime/capabilities.ts";
+import { CHILD_COMMAND_ROOT } from "../runtime/children.ts";
 import { validateFormatValue } from "./formats.ts";
-import { resolveJsonPointer } from "./json-pointer.ts";
 import {
   type AppSpec,
   type Command,
@@ -83,28 +81,8 @@ export function cliValidateProgram(program: AppSpec): void {
     throw new SchemaValidationError("version is required");
   }
 
-  if (program.mcpServer !== undefined && program.mcpServer.enabled !== true) {
-    throw new SchemaValidationError("mcpServer requires enabled: true; omit mcpServer to disable MCP");
-  }
-
-  if (program.mcpServer?.instructions !== undefined && program.mcpServer.instructions.trim().length === 0) {
-    throw new SchemaValidationError("mcpServer.instructions must not be empty; omit it instead");
-  }
-
-  if (program.httpServer !== undefined && program.httpServer.enabled !== true) {
-    throw new SchemaValidationError("httpServer requires enabled: true; omit httpServer to disable HTTP API");
-  }
-
-  validateHttpPathPrefix(program);
-
-  for (const [label, errorSchema] of [
-    ["httpServer.errors.errorSchema", program.httpServer?.errors?.errorSchema],
-    ["mcpServer.errors.errorSchema", program.mcpServer?.errors?.errorSchema],
-  ] as const) {
-    if (errorSchema !== undefined) {
-      assertZodSchema(errorSchema, label);
-      emitOrThrow(errorSchema, "output", label);
-    }
+  if (program.mcp?.instructions !== undefined && program.mcp.instructions.trim().length === 0) {
+    throw new SchemaValidationError("mcp.instructions must not be empty; omit it instead");
   }
 
   const caps = resolveCapabilities(program);
@@ -121,128 +99,39 @@ export function cliValidateProgram(program: AppSpec): void {
   walkNode(program, program, true);
   validateLeafPathParams(program, []);
 
-  if (caps.mcp) {
-    validateMcpToolSchemas(program);
-  }
-}
-
-/** Keywords whose values are instance data, not subschemas; a `$ref` string inside them is not a reference. */
-const SCHEMA_DATA_KEYWORDS = new Set(["const", "default", "enum", "examples"]);
-
-/** Collects every `$ref` string in a schema (skipping instance-data keywords). */
-function collectSchemaRefs(
-  /** Schema fragment to walk. */
-  node: unknown,
-  /** Accumulator for found `$ref` values. */
-  out: string[],
-): string[] {
-  if (Array.isArray(node)) {
-    for (const item of node) {
-      collectSchemaRefs(item, out);
-    }
-  } else if (typeof node === "object" && node !== null) {
-    for (const [key, value] of Object.entries(node)) {
-      if (key === "$ref" && typeof value === "string") {
-        out.push(value);
-      } else if (!SCHEMA_DATA_KEYWORDS.has(key)) {
-        collectSchemaRefs(value, out);
-      }
-    }
-  }
-  return out;
 }
 
 /**
  * Checks the schemas MCP clients will see (after object-root wrapping in `collectMcpTools`):
  * every local `$ref` must resolve, and wrapped schemas cannot use `$ref: "#"` (it would point at the wrapper).
  */
-function validateMcpToolSchemas(
-  /** App spec with `mcpServer.enabled`. */
-  program: AppSpec,
-): void {
-  for (const tool of collectMcpTools(program)) {
-    const schemas = [
-      { label: "inputSchema", schema: tool.inputSchema, wrapped: tool.inputWrapped },
-      { label: "outputSchema", schema: tool.outputSchema, wrapped: tool.outputWrapped },
-    ];
-    for (const { label, schema, wrapped } of schemas) {
-      if (schema === undefined) {
-        continue;
-      }
-      for (const ref of collectSchemaRefs(schema, [])) {
-        if (ref === "#" && wrapped) {
-          throw new SchemaValidationError(
-            `MCP tool "${tool.name}" ${label} uses $ref "#" but its root is not type "object", so MCP wraps it; ` +
-              "reference a named definition instead",
-          );
-        }
-        if (ref.startsWith("#/") && resolveJsonPointer(schema, ref) === undefined) {
-          throw new SchemaValidationError(`MCP tool "${tool.name}" ${label} has an unresolved $ref: ${ref}`);
-        }
-      }
-    }
-  }
-}
-
 const PARAM_ROUTER_KEY = /^:[a-zA-Z][a-zA-Z0-9_]*$/;
 
 function isParamRouterKey(key: string): boolean {
   return key.startsWith(":");
 }
 
-/** Validates `httpServer.pathPrefix` and reserved top-level command keys. */
-function validateHttpPathPrefix(program: AppSpec): void {
-  if (!program.httpServer?.enabled) {
-    return;
-  }
-  const raw = program.httpServer.pathPrefix;
-  if (raw !== undefined && raw !== "") {
-    if (!raw.startsWith("/")) {
-      throw new SchemaValidationError(`httpServer.pathPrefix must start with / (got ${JSON.stringify(raw)})`);
-    }
-    if (raw.length > 1 && raw.endsWith("/")) {
-      throw new SchemaValidationError(`httpServer.pathPrefix must not end with / (got ${JSON.stringify(raw)})`);
-    }
-    if (raw.includes("//")) {
-      throw new SchemaValidationError("httpServer.pathPrefix must not contain //");
-    }
-    if (raw === "/health" || raw === "/swagger" || raw === "/openapi.json" || raw === "/tools") {
-      throw new SchemaValidationError(
-        `httpServer.pathPrefix must not be a framework path (got ${JSON.stringify(raw)})`,
-      );
-    }
-    return;
-  }
-  if (!hasSubcommands(program)) {
-    if (hasHandler(program) && HTTP_RESERVED_TOP_LEVEL_SEGMENTS.has(program.key)) {
-      throw new SchemaValidationError(`Reserved HTTP program key when httpServer.pathPrefix is empty: ${program.key}`);
-    }
-    return;
-  }
-  for (const child of program.commands) {
-    if (HTTP_RESERVED_TOP_LEVEL_SEGMENTS.has(child.key)) {
-      throw new SchemaValidationError(
-        `Reserved HTTP command name when httpServer.pathPrefix is empty: ${child.key} (set httpServer.pathPrefix or rename)`,
-      );
-    }
-  }
-}
-
 function walkNode(node: Command, program: AppSpec, isRoot: boolean): void {
   if (!isRoot) {
     const rogue = node as AppSpec;
-    if (rogue.mcpServer !== undefined) {
-      throw new SchemaValidationError(`mcpServer is only supported on the app root (not on ${node.key})`);
+    if (rogue.mcp !== undefined) {
+      throw new SchemaValidationError(`mcp is only supported on the app root (not on ${node.key})`);
     }
-    if (rogue.httpServer !== undefined) {
-      throw new SchemaValidationError(`httpServer is only supported on the app root (not on ${node.key})`);
+    if (rogue.http !== undefined) {
+      throw new SchemaValidationError(`http is only supported on the app root (not on ${node.key})`);
     }
   }
 
+  if (
+    !isRoot &&
+    hasSubcommands(node) &&
+    (node.options?.length ?? 0) > 0 &&
+    !(node as Command & { [CHILD_COMMAND_ROOT]?: true })[CHILD_COMMAND_ROOT]
+  ) {
+    throw new SchemaValidationError(`command group '${node.key}' cannot define options`);
+  }
+
   if (hasHandler(node)) {
-    if (isRoot && node.mcpTool !== undefined) {
-      throw new SchemaValidationError("mcpTool is only supported on commands with a handler");
-    }
     if ((node as { kind?: string }).kind === "json") {
       throw new SchemaValidationError(
         `kind: "json" was removed on ${node.key}; use kind: "document"; ${MIGRATION_HINT}`,
@@ -284,26 +173,9 @@ function walkNode(node: Command, program: AppSpec, isRoot: boolean): void {
         }
       }
     }
-  } else {
-    const rogue = node as unknown as RunnableCommand;
-    if (rogue.mcpTool !== undefined) {
-      throw new SchemaValidationError(`mcpTool is only supported on commands with a handler (not on ${node.key})`);
-    }
-  }
-
-  if (isRoot && program.mcpServer?.enabled === true && program.mcpServer.resources) {
-    const uris = program.mcpServer.resources.map((r) => r.uri);
-    if (new Set(uris).size !== uris.length) {
-      throw new SchemaValidationError("mcpServer.resources URIs must be unique");
-    }
   }
 
   if (hasSubcommands(node)) {
-    if (!isRoot && (node.options ?? []).length > 0) {
-      throw new SchemaValidationError(
-        `Options on command group '${node.key}' are not supported — declare options on commands with a handler`,
-      );
-    }
     const seenNames = new Set<string>();
     let paramRouterCount = 0;
     for (const child of node.commands) {
@@ -490,6 +362,9 @@ function validatePositionals(scopeKey: string, positionals: readonly import("./t
     }
   }
 }
+
+/** Keywords containing instance data rather than nested schema values. */
+const SCHEMA_DATA_KEYWORDS = new Set(["const", "default", "enum", "examples"]);
 
 /** Object paths in an emitted schema that accept unknown keys (no `additionalProperties: false`). */
 function nonStrictObjectPaths(

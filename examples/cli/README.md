@@ -26,8 +26,9 @@ Shell completions: `example-cli completion zsh --help` (also bash and fish).
 ### Built-in commands
 
 - `example-cli completion` — Print shell tab-completion scripts (bash, zsh, fish).
-- `example-cli mcp` — Start the Model Context Protocol (stdio) server for AI coding agents.
-- `example-cli http` — Start the HTTP API server.
+- `example-cli serve` — Start every configured HTTP mount.
+- `example-cli serve http` — Start only the REST HTTP mount.
+- `example-cli serve mcp --stdio` — Start the MCP stdio server.
 - `example-cli version` — Display version information.
 
 ## Usage
@@ -35,14 +36,15 @@ Shell completions: `example-cli completion zsh --help` (also bash and fish).
 ```bash
 example-cli echo --message "Hello, world!"
 example-cli status --json
-example-cli mcp
+example-cli serve
+example-cli serve mcp --stdio
 ```
 
 ## AI Agent & MCP Integration
 
-MCP negotiates through `2025-11-25` and retains both previously supported revisions. Cancellation, progress, and strict output validation are optional. Completion, version, MCP, and HTTP remain enabled.
+The example enables completion, version, independent MCP, REST, and JSON-RPC declarations.
 
-- **MCP server**: add `{ "command": "npx", "args": ["-y", "example-cli", "mcp"] }` to your client's MCP config.
+- **MCP server**: add `{ "command": "npx", "args": ["-y", "example-cli", "serve", "mcp", "--stdio"] }` to your client's MCP config.
 - **Agent skill**: `skills/example-cli/SKILL.md`; copy it into your agent's skill directory.
 
 
