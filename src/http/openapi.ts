@@ -3,10 +3,11 @@ Generates OpenAPI 3.1 documents from explicit REST route catalogs.
 The discovery document and dispatch catalog share one fixed registration snapshot.
 */
 
+import { toJsonSchema } from "../core/zod-schema.ts";
+import { documentMediaType } from "./media.ts";
 import type { HttpRouteCatalog, RegisteredHttpRoute } from "./routes.ts";
 import { defaultSuccessStatus } from "./routes.ts";
 import { dereferenceJsonSchema } from "./schema-deref.ts";
-import { toJsonSchema } from "../core/zod-schema.ts";
 
 /** Required identity for a catalog-owned OpenAPI document. */
 export interface HttpCatalogOpenApiOptions {
@@ -36,17 +37,21 @@ const HTTP_ERROR_SCHEMA = {
 } as const;
 
 /** Builds one schema-bearing response entry. */
-function jsonResponse(
+function documentedResponse(
   /** Response description. */
   description: string,
   /** Optional response schema. */
   schema?: Record<string, unknown>,
-  /** Response media type. */
-  contentType = "application/json; charset=utf-8",
+  /** Fixed native media type; omit for framework-negotiated responses. */
+  contentType?: string,
 ): Record<string, unknown> {
   return {
     description,
-    ...(schema === undefined ? {} : { content: { [contentType]: { schema } } }),
+    ...(schema === undefined ? {} : {
+      content: contentType === undefined
+        ? { "application/json; charset=utf-8": { schema }, [documentMediaType.yaml]: { schema } }
+        : { [contentType]: { schema } },
+    }),
   };
 }
 
@@ -99,15 +104,15 @@ function routeParameters(route: RegisteredHttpRoute): Record<string, unknown>[] 
   return parameters;
 }
 
-/** Builds the optional JSON request body from the route's body schema. */
+/** Documents the same request schema for JSON and YAML. */
 function requestBody(route: RegisteredHttpRoute): Record<string, unknown> | undefined {
   if (route.spec.body === undefined) return undefined;
+  const schema = dereferenceJsonSchema(toJsonSchema(route.spec.body, "input"));
   return {
     required: false,
     content: {
-      "application/json": {
-        schema: dereferenceJsonSchema(toJsonSchema(route.spec.body, "input")),
-      },
+      [documentMediaType.json]: { schema },
+      [documentMediaType.yaml]: { schema },
     },
   };
 }
@@ -118,7 +123,7 @@ function responses(route: RegisteredHttpRoute): Record<string, unknown> {
   for (const response of route.spec.responses ?? []) {
     const schema =
       response.schema === undefined ? undefined : dereferenceJsonSchema(toJsonSchema(response.schema, "output"));
-    result[String(response.status)] = jsonResponse(
+    result[String(response.status)] = documentedResponse(
       response.description,
       schema,
       response.contentType ?? "application/json; charset=utf-8",
@@ -131,13 +136,13 @@ function responses(route: RegisteredHttpRoute): Record<string, unknown> {
   }
   if (route.spec.outputSchema !== undefined) {
     const status = route.spec.response?.status ?? defaultSuccessStatus(route.spec.method, true);
-    result[String(status)] = jsonResponse(
+    result[String(status)] = documentedResponse(
       "Successful invocation",
       dereferenceJsonSchema(toJsonSchema(route.spec.outputSchema, "output")),
     );
   }
   for (const status of ["400", "403", "404", "415", "500"] as const) {
-    result[status] ??= jsonResponse(
+    result[status] ??= documentedResponse(
       status === "400"
         ? "Invalid REST input"
         : status === "403"

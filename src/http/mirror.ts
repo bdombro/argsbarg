@@ -11,9 +11,11 @@ import type {
   CliNativeCallResult,
   CliRelayCallContext,
 } from "../cli/mirror.ts";
+import { type DocumentFormat, encodeDocument } from "../core/document.ts";
 import type { InvocationBase } from "../core/invocation.ts";
 import { bindHttpCall, type HttpCallInput } from "./bind.ts";
 import { encodeHttpOutcome } from "./encode.ts";
+import { documentMediaType } from "./media.ts";
 import { type HttpRouteCatalog, invokeRegisteredHttpRoute } from "./routes.ts";
 
 export type { HttpCallInput } from "./bind.ts";
@@ -27,11 +29,17 @@ export type HttpFailureCallResult = CliFailedCallResult;
 /** REST specialization of the shared generated-CLI result shape. */
 export type HttpCallResult = CliCallResult<Response>;
 
+/** Representation selected by the generated REST CLI command. */
+interface HttpMirrorFormat {
+  /** Document format for generated bodies; native responses are unaffected. */
+  readonly format?: DocumentFormat;
+}
+
 /** Explicit process-local source fixed for one generated local REST call. */
-export type HttpLocalCallContext<Seed extends object = Record<never, never>> = CliLocalCallContext<Seed>;
+export type HttpLocalCallContext<Seed extends object = Record<never, never>> = CliLocalCallContext<Seed> & HttpMirrorFormat;
 
 /** Explicit remote source and injected Fetch dependency for one relay call. */
-export type HttpRelayCallContext = CliRelayCallContext;
+export type HttpRelayCallContext = CliRelayCallContext & HttpMirrorFormat;
 
 /** Exclusive local or relay context accepted by the paired REST registration seam. */
 export type CliCallContext<Seed extends object = Record<never, never>> =
@@ -129,7 +137,7 @@ export function createHttpLocalMirror<Seed extends object = Record<never, never>
       if (context.signal.aborted) {
         return failure("transport", "CALL_ABORTED", "REST call was aborted", outcome.stdout, outcome.stderr);
       }
-      return native(encodeHttpOutcome(outcome, bound.route), outcome.stdout, outcome.stderr);
+      return native(encodeHttpOutcome(outcome, bound.route, context.format), outcome.stdout, outcome.stderr);
     },
   };
 }
@@ -161,17 +169,16 @@ export function createHttpRelayMirror(): HttpRelayMirror {
 
       const headers = new Headers();
       for (const [name, value] of context.headers) headers.append(name, value);
+      const format = context.format ?? "json";
+      if (format === "yaml") headers.set("accept", documentMediaType.yaml);
       let body: string | undefined;
       if (input.body !== undefined) {
         try {
-          body = JSON.stringify(input.body);
+          body = encodeDocument(input.body, format);
         } catch {
           return failure("input", "INVALID_BODY", "Request body must be JSON serializable");
         }
-        if (body === undefined) {
-          return failure("input", "INVALID_BODY", "Request body must be JSON serializable");
-        }
-        headers.set("content-type", "application/json; charset=utf-8");
+        headers.set("content-type", `${documentMediaType[format]}; charset=utf-8`);
       }
 
       try {

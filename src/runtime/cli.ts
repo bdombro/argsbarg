@@ -9,6 +9,7 @@ import { cliParseRoot, cliPresentationRoot } from "../builtins/presentation.ts";
 import { bindCliCommand, type CliBoundCommand, processEnvView } from "../cli/bind.ts";
 import { type CliCallWriter, encodeCliOutcome, presentCliCall } from "../cli/encode.ts";
 import type { CliCallResult, CliFailedCallResult } from "../cli/mirror.ts";
+import { decodeDocument, type DocumentFormat } from "../core/document.ts";
 import type { BoundDeclaration, Guard, InvocationContext, InvocationOutcome } from "../core/invocation.ts";
 import { InputError, preloadPipableJson } from "../core/leaf-inputs.ts";
 import { collectPathOptionDefs, ParseKind, type ParseResult, parse, postParseValidate } from "../core/parse.ts";
@@ -111,6 +112,8 @@ interface CliCatalogEntry {
 
 /** Parsed D35 relay flags shared by all generated CLI calls. */
 interface CliMirrorArguments {
+  /** Format for the piped input and structured result. */
+  readonly format: DocumentFormat;
   /** Explicit relay URL, or `undefined` for direct local registration. */
   readonly relay?: URL;
   /** Sanitized case-insensitive-unique explicit relay headers. */
@@ -498,11 +501,16 @@ export class App {
     const positionals: string[] = [];
     const headers: [string, string][] = [];
     const names = new Set<string>();
+    let format: DocumentFormat = "json";
     let relayText: string | undefined;
     for (let index = 0; index < argv.length; index += 1) {
       const token = argv[index] ?? "";
       if (token === "--help" || token === "-h") {
         return callFailure("input", "HELP_REQUESTED", "Generated command help requested");
+      }
+      if (token === "--yaml") {
+        format = "yaml";
+        continue;
       }
       if (token === "--relay" || token.startsWith("--relay=")) {
         const value = token === "--relay" ? argv[++index] : token.slice("--relay=".length);
@@ -551,7 +559,7 @@ export class App {
     if (headers.length > 0 && relayText === undefined) {
       return callFailure("input", "HEADER_WITHOUT_RELAY", "--header requires --relay");
     }
-    if (relayText === undefined) return { positionals, headers };
+    if (relayText === undefined) return { positionals, headers, format };
     let relay: URL;
     try {
       relay = new URL(relayText);
@@ -566,7 +574,7 @@ export class App {
     ) {
       return callFailure("input", "INVALID_RELAY_URL", "Relay must be an HTTP(S) URL without userinfo or fragment");
     }
-    return { positionals, headers, relay };
+    return { positionals, headers, relay, format };
   }
 
   /** Invokes and presents one configured generated local or relay call. */
@@ -575,7 +583,7 @@ export class App {
     options: {
       /** Native terminal sink; production is incremental and invoke is a collector. */
       readonly writer: CliCallWriter;
-      /** Exactly one optional stdin JSON document. */
+      /** Exactly one optional stdin document. */
       readonly input?: string;
       /** Exact caller/process signal retained by local D2 or relay Fetch. */
       readonly signal: AbortSignal;
@@ -593,7 +601,7 @@ export class App {
       return presentCliCall(this.generatedSurface(argv), parsed, options.writer, options.signal);
     }
 
-    const input = parseGeneratedJson(options.input);
+    const input = parseGeneratedDocument(options.input, parsed.format);
     if (input.kind === "failure") {
       return presentCliCall(this.generatedSurface(argv), input.failure, options.writer, options.signal);
     }
@@ -611,7 +619,7 @@ export class App {
         surface = "mcp";
         call = await this.callGeneratedMcp(parsed, input.value, options);
       }
-      return presentCliCall(surface, call, options.writer, options.signal);
+      return presentCliCall(surface, call, options.writer, options.signal, parsed.format);
     } catch {
       const failure = callFailure("transport", "CALL_FAILED", "Generated call failed");
       return presentCliCall(this.generatedSurface(argv), failure, options.writer, options.signal);
@@ -642,13 +650,13 @@ export class App {
           "input",
           "INVALID_CALL",
           parsed.relay === undefined
-            ? "Usage: api <METHOD> <FULL_PATH> [--relay URL] [--header name:value]"
+            ? generatedCliHelp(["api"]).trimEnd()
             : "REST --relay requires an HTTP(S) origin",
         ),
       );
     }
     if (input !== undefined && (typeof input !== "object" || input === null || Array.isArray(input))) {
-      return Promise.resolve(callFailure("input", "INVALID_BODY", "REST stdin must be one JSON object"));
+      return Promise.resolve(callFailure("input", "INVALID_BODY", parsed.format === "yaml" ? "REST stdin must be one YAML mapping" : "REST stdin must be one JSON object"));
     }
     const catalog = this.httpCatalog as HttpRouteCatalog;
     const callInput = {
@@ -669,6 +677,7 @@ export class App {
         signal: options.signal,
         locals: { requestId: randomUUID() } as Locals,
         env: processEnvNameView(),
+        ...(parsed.format === "yaml" ? { format: parsed.format } : {}),
       });
     }
     return mirror.relay.invoke(callInput, {
@@ -677,6 +686,7 @@ export class App {
       url: parsed.relay,
       headers: parsed.headers,
       fetch: options.fetch,
+      format: parsed.format,
     });
   }
 
@@ -689,7 +699,7 @@ export class App {
     const [method] = parsed.positionals;
     if (parsed.positionals.length !== 1 || method === undefined) {
       return Promise.resolve(
-        callFailure("input", "INVALID_CALL", "Usage: rpc <METHOD> [--relay URL] [--header name:value]"),
+        callFailure("input", "INVALID_CALL", generatedCliHelp(["rpc"]).trimEnd()),
       );
     }
     if (
@@ -733,7 +743,7 @@ export class App {
     const [name] = parsed.positionals;
     if (parsed.positionals.length !== 1 || name === undefined) {
       return Promise.resolve(
-        callFailure("input", "INVALID_CALL", "Usage: mcp call <NAME> [--relay URL] [--header name:value]"),
+        callFailure("input", "INVALID_CALL", generatedCliHelp(["mcp", "call"]).trimEnd()),
       );
     }
     const argumentsValue = input === undefined ? {} : input;
@@ -1282,18 +1292,25 @@ function callFailure(
   };
 }
 
-/** Parses exactly one optional JSON stdin document without reading ambient state. */
-function parseGeneratedJson(
+/** Parses exactly one optional stdin document without reading ambient state. */
+function parseGeneratedDocument(
   /** Complete optional stdin text. */
   text: string | undefined,
+  /** Explicit mirror format, defaulting to JSON at argument parsing. */
+  format: DocumentFormat,
 ):
   | { readonly kind: "value"; readonly value: unknown }
   | { readonly kind: "failure"; readonly failure: CliFailedCallResult } {
   if (text === undefined || text.trim().length === 0) return { kind: "value", value: undefined };
   try {
-    return { kind: "value", value: JSON.parse(text) as unknown };
+    return { kind: "value", value: decodeDocument(text, format) };
   } catch {
-    return { kind: "failure", failure: callFailure("input", "INVALID_JSON", "stdin is not valid JSON") };
+    return {
+      kind: "failure",
+      failure: format === "yaml"
+        ? callFailure("input", "INVALID_YAML", "stdin is not a valid YAML document")
+        : callFailure("input", "INVALID_JSON", "stdin is not valid JSON"),
+    };
   }
 }
 
@@ -1328,15 +1345,15 @@ function processEnvNameView(): import("../core/invocation.ts").NameView {
   return processEnvView(process.env);
 }
 
-/** Returns plain generated-command help with the exact D35 flags. */
+/** Returns plain generated-command help with the exact supported flags. */
 function generatedCliHelp(argv: readonly string[]): string {
   if (argv[0] === "api") {
-    return "Usage: api <METHOD> <FULL_PATH> [--relay URL] [--header name:value]\n";
+    return "Usage: api <METHOD> <FULL_PATH> [--yaml] [--relay URL] [--header name:value]\n";
   }
   if (argv[0] === "rpc") {
-    return "Usage: rpc <METHOD> [--relay URL] [--header name:value]\n";
+    return "Usage: rpc <METHOD> [--yaml] [--relay URL] [--header name:value]\n";
   }
-  return "Usage: mcp call <NAME> [--relay URL] [--header name:value]\n";
+  return "Usage: mcp call <NAME> [--yaml] [--relay URL] [--header name:value]\n";
 }
 
 /** Creates parser/help-only nodes for every configured D35 generated command. */
@@ -1356,6 +1373,11 @@ function generatedCliCommands(program: AppSpec): readonly Command[] {
       name: "header",
       description: "Repeatable explicit relay header in name:value form.",
       kind: "string" as const,
+    },
+    {
+      name: "yaml",
+      description: "Read YAML stdin and write structured results as YAML.",
+      kind: "presence" as const,
     },
   ];
   if (program.http !== undefined) {

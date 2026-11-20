@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [9.0.1] - 2026-11-20
+
+- **New:** REST routes accept `application/yaml` bodies and negotiate YAML results and errors through `Accept`. Generated CLI mirrors support `--yaml`; JSON remains the default and the MCP and JSON-RPC HTTP wire formats are unchanged.
 - **Docs:** add `.agents/` maintenance guidance and a durable thread index with direct links to completed v9 release state and planning evidence.
 
 ## [9.0.0] - 2026-11-20
@@ -1285,7 +1288,8 @@ const cli = { ... } satisfies CliProgram;  // or : CliProgram
 - Migrate schemas: rename every `children` property to **`commands`**; move positional definitions to **`CliPositional`** objects on `positionals` and strip `positional` / `argMin` / `argMax` from flag definitions under `options` (flags only carry `name`, `description`, `kind`, and optional `shortName`).
 - Imports: use `CliPositional` where needed; replace `CliOptionDef` with `CliOption` or `CliPositional` as appropriate.
 
-[Unreleased]: https://github.com/bdombro/argsbarg/compare/v9.0.0...HEAD
+[Unreleased]: https://github.com/bdombro/argsbarg/compare/v9.0.1...HEAD
+[9.0.1]: https://github.com/bdombro/argsbarg/releases/tag/v9.0.1
 [9.0.0]: https://github.com/bdombro/argsbarg/releases/tag/v9.0.0
 [8.3.1]: https://github.com/bdombro/argsbarg/releases/tag/v8.3.1
 [8.3.0]: https://github.com/bdombro/argsbarg/releases/tag/v8.3.0

@@ -9,6 +9,7 @@ import { extractTraceContext, formatTraceparent } from "../log/trace.ts";
 import type { HttpMount, HttpMountContext } from "../server/listener.ts";
 import { dispatchHttpRequest } from "./dispatch.ts";
 import { finishHttpResponse, httpErrorResponse } from "./encode.ts";
+import { responseDocumentFormat } from "./media.ts";
 import { generateHttpCatalogOpenApi, type HttpCatalogOpenApiOptions } from "./openapi.ts";
 import { API_CORS_HEADERS, apiDocsHtml, apiOptionsResponse } from "./result.ts";
 import type { HttpRouteCatalog } from "./routes.ts";
@@ -57,8 +58,9 @@ function resolveClientIp(request: Request, trustProxy: boolean): string {
 }
 
 /** Builds a generic terminal REST response without exposing internal exception text. */
-function internalError(): Response {
-  return httpErrorResponse(500, "INTERNAL_ERROR", "An unexpected error occurred");
+function internalError(request: Request): Response {
+  const format = responseDocumentFormat(request.headers.get("accept"));
+  return httpErrorResponse(500, "INTERNAL_ERROR", "An unexpected error occurred", undefined, undefined, format);
 }
 
 /** Builds the only exact JSON discovery response owned by the REST mount. */
@@ -129,7 +131,7 @@ export function createHttpMount<Seed extends object = Record<never, never>>(
       const fail = async (
         error: unknown,
         failureKind: InvokeFailureKind = "unexpected",
-        response = internalError(),
+        response = internalError(request),
       ): Promise<Response> => {
         if (!onErrorCalled) {
           onErrorCalled = true;

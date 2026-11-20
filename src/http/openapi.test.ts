@@ -75,9 +75,12 @@ test("catalog OpenAPI uses external /api paths, exact operation IDs, and disjoin
   assert.equal(parameters[1]?.style, "form");
   assert.equal(parameters[1]?.explode, true);
   const requestBody = operation?.requestBody as {
-    content: { "application/json": { schema: Record<string, unknown> } };
+    content: Record<string, { schema: Record<string, unknown> }>;
   };
-  assert.deepEqual(requestBody.content["application/json"].schema.required, ["format"]);
+  assert.deepEqual(requestBody.content["application/json"]?.schema.required, ["format"]);
+  assert.deepEqual(requestBody.content["application/yaml"], requestBody.content["application/json"]);
+  const responses = operation?.responses as Record<string, { content: Record<string, unknown> }>;
+  assert.ok(responses["400"]?.content["application/yaml"]);
   assert.deepEqual(document.tags, [{ name: "projects" }]);
   assert.equal(JSON.stringify(document).includes("/api-rpc"), false);
   assert.equal(JSON.stringify(document).includes("/tools/"), false);

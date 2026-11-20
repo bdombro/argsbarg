@@ -3,9 +3,11 @@ Deterministic REST encoding for shared invocation outcomes.
 Handler-owned Web Responses pass through by identity without reading or buffering their bodies.
 */
 
+import { type DocumentFormat, encodeDocument } from "../core/document.ts";
 import { AppError } from "../core/errors.ts";
 import type { Denial, InvocationOutcome } from "../core/invocation.ts";
 import type { HttpBindError } from "./bind.ts";
+import { documentMediaType } from "./media.ts";
 import type { RegisteredHttpRoute } from "./routes.ts";
 
 /** Stable JSON error document emitted by the REST adapter. */
@@ -49,7 +51,21 @@ function safeDetails(details: unknown): unknown {
   }
 }
 
-/** Builds a JSON error response with the stable REST envelope. */
+/** Builds response headers for a framework-owned document without touching native responses. */
+function documentHeaders(format: DocumentFormat | undefined, extra?: Readonly<Record<string, string>>): Headers {
+  const headers = new Headers({ "content-type": `${documentMediaType[format ?? "json"]}; charset=utf-8`, ...extra });
+  if (format === "yaml") {
+    headers.set("content-type", `${documentMediaType.yaml}; charset=utf-8`);
+    headers.delete("content-length");
+  }
+  if (format !== undefined) {
+    const variesBy = headers.get("vary")?.split(",").map((field) => field.trim().toLowerCase()) ?? [];
+    if (!variesBy.includes("*") && !variesBy.includes("accept")) headers.append("vary", "Accept");
+  }
+  return headers;
+}
+
+/** Builds a document response with the stable REST error envelope. */
 export function httpErrorResponse(
   /** HTTP status. */
   status: number,
@@ -61,6 +77,8 @@ export function httpErrorResponse(
   details?: unknown,
   /** Optional additional error response headers. */
   headers?: Readonly<Record<string, string>>,
+  /** Negotiated format; omitted for internal encoders that do not negotiate. */
+  format?: DocumentFormat,
 ): Response {
   const safe = safeDetails(details);
   const body: HttpErrorBody = {
@@ -70,12 +88,9 @@ export function httpErrorResponse(
       ...(safe === undefined ? {} : { details: safe }),
     },
   };
-  return new Response(JSON.stringify(body), {
+  return new Response(encodeDocument(body, format ?? "json"), {
     status,
-    headers: {
-      "content-type": "application/json; charset=utf-8",
-      ...(headers ?? {}),
-    },
+    headers: documentHeaders(format, headers),
   });
 }
 
@@ -83,8 +98,10 @@ export function httpErrorResponse(
 export function encodeHttpBindError(
   /** Stable binder failure. */
   error: HttpBindError,
+  /** Negotiated response format. */
+  format?: DocumentFormat,
 ): Response {
-  return httpErrorResponse(error.status, error.code, error.message, error.details);
+  return httpErrorResponse(error.status, error.code, error.message, error.details, undefined, format);
 }
 
 /** Escapes one quoted bearer challenge attribute. */
@@ -105,32 +122,25 @@ function bearerChallenge(denial: Denial): string | undefined {
   return `Bearer${attributes.length === 0 ? "" : ` ${attributes.join(", ")}`}`;
 }
 
-/** Returns the method-specific ordinary JSON success status. */
+/** Returns the method-specific ordinary success status. */
 function defaultStatus(method: string): number {
   return method === "POST" ? 201 : 200;
 }
 
-/** Encodes a successful ordinary value as one JSON response. */
-function encodeJsonSuccess(result: unknown, route: RegisteredHttpRoute): Response {
+/** Encodes a successful ordinary value in the selected document format. */
+function encodeSuccess(result: unknown, route: RegisteredHttpRoute, format?: DocumentFormat): Response {
   if (result === undefined) {
-    return httpErrorResponse(500, "NO_RESULT", "Handler returned no result");
+    return httpErrorResponse(500, "NO_RESULT", "Handler returned no result", undefined, undefined, format);
   }
   let body: string;
   try {
-    const serialized = JSON.stringify(result);
-    if (serialized === undefined) {
-      return httpErrorResponse(500, "INTERNAL_ERROR", "Handler result is not JSON serializable");
-    }
-    body = serialized;
+    body = encodeDocument(result, format ?? "json");
   } catch {
-    return httpErrorResponse(500, "INTERNAL_ERROR", "Handler result is not JSON serializable");
+    return httpErrorResponse(500, "INTERNAL_ERROR", "Handler result is not JSON serializable", undefined, undefined, format);
   }
   return new Response(body, {
     status: route.spec.response?.status ?? defaultStatus(route.spec.method),
-    headers: {
-      "content-type": "application/json; charset=utf-8",
-      ...(route.spec.response?.headers ?? {}),
-    },
+    headers: documentHeaders(format, route.spec.response?.headers),
   });
 }
 
@@ -140,15 +150,17 @@ export function encodeHttpOutcome(
   outcome: InvocationOutcome<unknown>,
   /** Registered route whose native response metadata applies. */
   route: RegisteredHttpRoute,
+  /** Format for generated success and error documents. */
+  format?: DocumentFormat,
 ): Response {
   if (outcome.kind === "ok") {
-    return outcome.result instanceof Response ? outcome.result : encodeJsonSuccess(outcome.result, route);
+    return outcome.result instanceof Response ? outcome.result : encodeSuccess(outcome.result, route, format);
   }
   if (outcome.kind === "invalid") {
     return httpErrorResponse(400, "INVALID_INPUT", "Input validation failed", {
       issues: outcome.error.issues.slice(0, 10).map(issueProjection),
       issueCount: outcome.error.issues.length,
-    });
+    }, undefined, format);
   }
   if (outcome.kind === "denied") {
     const headers: Record<string, string> = { ...(outcome.denial.http?.headers ?? {}) };
@@ -160,6 +172,7 @@ export function encodeHttpOutcome(
       outcome.denial.message,
       undefined,
       headers,
+      format,
     );
   }
   if (outcome.error instanceof AppError) {
@@ -168,9 +181,11 @@ export function encodeHttpOutcome(
       outcome.error.code,
       outcome.error.message,
       outcome.error.details,
+      undefined,
+      format,
     );
   }
-  return httpErrorResponse(500, "INTERNAL_ERROR", "An unexpected error occurred");
+  return httpErrorResponse(500, "INTERNAL_ERROR", "An unexpected error occurred", undefined, undefined, format);
 }
 
 /**

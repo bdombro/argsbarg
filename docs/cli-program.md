@@ -104,6 +104,8 @@ printf '%s\n' '{"name":"Ada"}' | myapp mcp call greet
 
 Add repeatable `--header name:value` with `--relay <url>` for one explicit remote call. Relay URLs are HTTP(S), never forwarded from ambient headers or environment, and never retried or fallen back to a local declaration.
 
+Add `--yaml` to `api`, `rpc`, or `mcp call` to read YAML from stdin and present structured results as YAML. JSON is the default. REST relays send and request YAML with this flag; JSON-RPC and MCP relay requests still use their normal protocol formats. Native REST response bodies pass through unchanged.
+
 ## Keyed child apps
 
 Mount standalone apps as immutable build-time snapshots:

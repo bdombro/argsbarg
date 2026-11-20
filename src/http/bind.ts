@@ -1,11 +1,13 @@
 /*
 Native REST request binding for the explicit HTTP route catalog.
-It maps path, query, and JSON body into one raw input without parsing with Zod.
+It maps path, query, and document body into one raw input without parsing with Zod.
 */
 
 import type { z } from "zod";
+import { decodeDocument } from "../core/document.ts";
 import type { InvocationBase } from "../core/invocation.ts";
 import { toJsonSchema } from "../core/zod-schema.ts";
+import { requestDocumentFormat } from "./media.ts";
 import type { HttpRouteCatalog, RegisteredHttpRoute } from "./routes.ts";
 import { matchHttpCatalogRoute } from "./routes.ts";
 import { dereferenceJsonSchema } from "./schema-deref.ts";
@@ -194,20 +196,6 @@ function bindQuery(search: URLSearchParams, route: RegisteredHttpRoute): Record<
   return raw;
 }
 
-/** Parses the accepted JSON media type and optional UTF-8 charset. */
-function acceptsJsonMediaType(contentType: string | null): boolean {
-  if (contentType === null) return false;
-  const pieces = contentType
-    .split(";")
-    .map((piece) => piece.trim())
-    .filter((piece) => piece.length > 0);
-  const mediaType = (pieces.shift() ?? "").toLowerCase();
-  if (mediaType !== "application/json" && !/^application\/[^/]+\+json$/.test(mediaType)) return false;
-  if (pieces.length === 0) return true;
-  if (pieces.length !== 1) return false;
-  return /^charset=(?:utf-8|"utf-8")$/i.test(pieces[0] ?? "");
-}
-
 /** Parsed native body and whether non-empty request text was supplied. */
 interface BoundHttpBody {
   /** Decoded JSON object, or an empty object when the body is absent. */
@@ -216,24 +204,27 @@ interface BoundHttpBody {
   readonly provided: boolean;
 }
 
-/** Binds an accepted non-empty JSON body object or an empty object. */
+/** Binds one accepted body object or an empty object. */
 async function bindBody(request: Request, route: RegisteredHttpRoute): Promise<BoundHttpBody | HttpBindError> {
   const text = await request.text();
   if (text.trim().length === 0) return { value: {}, provided: false };
   if (route.spec.body === undefined) {
     return bindError(400, "BODY_NOT_DECLARED", "This route does not accept a request body");
   }
-  if (!acceptsJsonMediaType(request.headers.get("content-type"))) {
-    return bindError(415, "UNSUPPORTED_MEDIA_TYPE", "A UTF-8 JSON request body is required");
+  const format = requestDocumentFormat(request.headers.get("content-type"));
+  if (format === undefined) {
+    return bindError(415, "UNSUPPORTED_MEDIA_TYPE", "A UTF-8 JSON or YAML request body is required");
   }
   let parsed: unknown;
   try {
-    parsed = JSON.parse(text) as unknown;
+    parsed = decodeDocument(text, format);
   } catch {
-    return bindError(400, "INVALID_JSON", "Request body is not valid JSON");
+    return format === "yaml"
+      ? bindError(400, "INVALID_YAML", "Request body is not a valid YAML document")
+      : bindError(400, "INVALID_JSON", "Request body is not valid JSON");
   }
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-    return bindError(400, "INVALID_BODY", "Request body must be a JSON object");
+    return bindError(400, "INVALID_BODY", format === "yaml" ? "Request body must be a YAML mapping" : "Request body must be a JSON object");
   }
   return { value: parsed as Record<string, unknown>, provided: true };
 }

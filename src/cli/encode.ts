@@ -3,6 +3,7 @@ CLI-native terminal encoding for shared invocation outcomes and generated REST/R
 It keeps captured streams separate, preserves native response streams, and owns exit-code policy.
 */
 
+import { type DocumentFormat, encodeDocument } from "../core/document.ts";
 import { AppError } from "../core/errors.ts";
 import type { InvocationOutcome } from "../core/invocation.ts";
 import type { JsonRpcMethodOutcome } from "../json-rpc/dispatch.ts";
@@ -127,11 +128,10 @@ async function writeCaptured(result: CliCallResult<unknown>, writer: CliCallWrit
   if (result.stderr.length > 0) await writer.stderr(result.stderr);
 }
 
-/** Serializes one compact native JSON value plus its protocol newline. */
-function compactJson(value: unknown): string {
-  const encoded = JSON.stringify(value);
-  if (encoded === undefined) throw new TypeError("Native call result is not JSON serializable");
-  return `${encoded}\n`;
+/** Serializes one structured terminal value with exactly one document-ending newline. */
+function terminalDocument(value: unknown, format: DocumentFormat): string {
+  const encoded = encodeDocument(value, format);
+  return format === "json" ? `${encoded}\n` : encoded;
 }
 
 /** Streams a native REST response body without buffering while preserving its final HTTP status policy. */
@@ -150,19 +150,19 @@ async function presentRest(response: Response, writer: CliCallWriter, signal: Ab
 }
 
 /** Presents an accepted JSON-RPC method success or native protocol/application error. */
-async function presentRpc(value: JsonRpcMethodOutcome, writer: CliCallWriter): Promise<0 | 1> {
+async function presentRpc(value: JsonRpcMethodOutcome, writer: CliCallWriter, format: DocumentFormat): Promise<0 | 1> {
   if (value.kind === "ok") {
-    await writer.stdout(compactJson(value.result));
+    await writer.stdout(terminalDocument(value.result, format));
     return 0;
   }
-  await writer.stderr(compactJson(value.error));
+  await writer.stderr(terminalDocument(value.error, format));
   return 1;
 }
 
 /** Presents the complete MCP result/error payload while discarding no native protocol fields. */
-async function presentMcp(value: McpResultResponse | McpErrorResponse, writer: CliCallWriter): Promise<0 | 1> {
+async function presentMcp(value: McpResultResponse | McpErrorResponse, writer: CliCallWriter, format: DocumentFormat): Promise<0 | 1> {
   if ("error" in value) {
-    await writer.stderr(compactJson(value.error));
+    await writer.stderr(terminalDocument(value.error, format));
     return 1;
   }
   if (
@@ -171,10 +171,10 @@ async function presentMcp(value: McpResultResponse | McpErrorResponse, writer: C
     "isError" in value.result &&
     value.result.isError === true
   ) {
-    await writer.stderr(compactJson(value.result));
+    await writer.stderr(terminalDocument(value.result, format));
     return 1;
   }
-  await writer.stdout(compactJson(value.result));
+  await writer.stdout(terminalDocument(value.result, format));
   return 0;
 }
 
@@ -188,6 +188,8 @@ export async function presentCliCall(
   writer: CliCallWriter,
   /** Authoritative caller/process cancellation signal. */
   signal: AbortSignal,
+  /** Representation for structured terminal output; REST writes its native body. */
+  format: DocumentFormat = "json",
 ): Promise<CliPresentedCall> {
   await writeCaptured(result, writer);
   if (result.kind === "failure") {
@@ -201,8 +203,8 @@ export async function presentCliCall(
   try {
     const exitCode =
       surface === "rpc"
-        ? await presentRpc(result.value as JsonRpcMethodOutcome, writer)
-        : await presentMcp(result.value as McpResultResponse | McpErrorResponse, writer);
+        ? await presentRpc(result.value as JsonRpcMethodOutcome, writer, format)
+        : await presentMcp(result.value as McpResultResponse | McpErrorResponse, writer, format);
     return { exitCode: signal.aborted ? 130 : exitCode };
   } catch {
     return { exitCode: signal.aborted ? 130 : 1 };

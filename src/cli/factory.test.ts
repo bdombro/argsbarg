@@ -5,6 +5,7 @@ They prove exact selectors, explicit relays, native presentation, and no local f
 
 import assert from "node:assert/strict";
 import test from "node:test";
+import { parse as parseYaml } from "yaml";
 import { z } from "zod";
 import { allow } from "../core/invocation.ts";
 import { command } from "../core/types.ts";
@@ -65,6 +66,33 @@ test("factory registers native REST, RPC, and MCP generated commands with local 
   assert.deepEqual(JSON.parse(restResult.stdout), { value: "rest" });
   assert.equal(rpcResult.stdout, '{"value":"rpc"}\n');
   assert.equal(JSON.parse(mcpResult.stdout).structuredContent.value, "mcp");
+
+  const yamlRest = await app.invoke(["api", "POST", "/api/echo", "--yaml"], { stdin: "value: rest" });
+  const yamlRpc = await app.invoke(["rpc", "echoRpc", "--yaml"], { stdin: "value: rpc" });
+  const yamlMcp = await app.invoke(["mcp", "call", "echoMcp", "--yaml"], { stdin: "value: mcp" });
+  assert.equal(yamlRest.exitCode, 0);
+  assert.deepEqual(parseYaml(yamlRest.stdout), { value: "rest" });
+  assert.equal(yamlRpc.exitCode, 0);
+  assert.deepEqual(parseYaml(yamlRpc.stdout), { value: "rpc" });
+  assert.equal(yamlMcp.exitCode, 0);
+  assert.equal(parseYaml(yamlMcp.stdout).structuredContent.value, "mcp");
+  const malformed = await app.invoke(["api", "POST", "/api/echo", "--yaml"], { stdin: "value: [" });
+  assert.equal(malformed.exitCode, 1);
+  assert.match(malformed.stderr, /^INVALID_YAML:/);
+
+  const yamlRelay = await app.invoke(["api", "POST", "/api/echo", "--yaml", "--relay", "https://relay.example"], {
+    stdin: "value: relay",
+    fetch: async (_url, init) => {
+      const headers = new Headers(init?.headers);
+      assert.equal(headers.get("accept"), "application/yaml");
+      assert.equal(headers.get("content-type"), "application/yaml; charset=utf-8");
+      assert.deepEqual(parseYaml(String(init?.body)), { value: "relay" });
+      return new Response("value: remote\n", { headers: { "content-type": "application/yaml" } });
+    },
+  });
+  assert.equal(yamlRelay.exitCode, 0);
+  assert.equal(yamlRelay.stdout, "value: remote\n");
+
   const help = await app.invoke(["--help"]);
   assert.match(help.stdout, /\n {2}api\s/);
   assert.match(help.stdout, /\n {2}rpc\s/);

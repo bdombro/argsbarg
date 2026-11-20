@@ -106,7 +106,7 @@ printf '%s\n' '{"name":"Ada"}' | hello mcp call greet
 
 Bare `serve` starts every configured HTTP mount. Name a surface, such as `serve http`, to start only that HTTP mount; `serve mcp --stdio` is the separate stdio transport.
 
-`api`, `rpc`, and `mcp call` execute locally and read an optional JSON document from stdin. Add `--relay <url>` for one explicit request; repeat `--header name:value` only for relay credentials. A relay never falls back to local execution.
+`api`, `rpc`, and `mcp call` execute locally and read an optional JSON document from stdin. Add `--yaml` for YAML input and structured output, or `--relay <url>` for one explicit request. A relay never falls back to local execution.
 
 ## Composition and policy
 

@@ -30,7 +30,11 @@ All REST operations are mounted under `/api`:
 | `/api/docs` | Swagger UI |
 | `/api/...` | Explicit registered routes |
 
-Launch with `myapp serve http` to start only REST. Bare `myapp serve` starts every configured REST, JSON-RPC, and MCP HTTP mount; `myapp serve http rpc` selects only the named HTTP mounts. Add `--host` or `--port` as needed. Ordinary handler values become JSON responses. Return a Web `Response` for status, headers, downloads, or streaming bodies.
+Launch with `myapp serve http` to start only REST. Bare `myapp serve` starts every configured REST, JSON-RPC, and MCP HTTP mount; `myapp serve http rpc` selects only the named HTTP mounts. Add `--host` or `--port` as needed.
+
+Use `Content-Type: application/yaml` to send a YAML mapping, or `Accept: application/yaml` to get YAML for ordinary results and structured errors. The headers are independent. JSON stays the default response format; native `Response` values, including downloads and streams, keep their original body and media type. OpenAPI advertises JSON and YAML, but `/api/openapi.json` itself is always JSON.
+
+YAML input is one document with JSON-compatible values. Duplicate keys, aliases, and custom tags are rejected.
 
 ```typescript
 handler: async ({ signal }) => new Response(download(signal), {
@@ -49,7 +53,8 @@ REST source data is headers only. Process environment is never a fallback on HTT
 ```bash
 myapp api GET /api/reports/42
 printf '%s\n' '{"name":"Ada"}' | myapp api POST /api/reports
+printf '%s\n' 'name: Ada' | myapp api POST /api/reports --yaml
 myapp api GET /api/reports/42 --relay https://reports.example
 ```
 
-REST relay URLs are origins. The generated command adds the exact full path supplied by the caller and follows no redirects.
+REST relay URLs are origins. The generated command adds the exact full path supplied by the caller and follows no redirects. A REST relay with `--yaml` sends and requests YAML; the remote response body still passes through unchanged.

@@ -5,6 +5,7 @@ They use in-process Web requests and synthetic streams only.
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { parse as parseYaml } from "yaml";
 import { z } from "zod";
 import { deny } from "../core/invocation.ts";
 import type { HttpWireContext } from "../core/types.ts";
@@ -144,6 +145,7 @@ test("mount claims only the fixed /api prefix and preserves request context and 
   const request = new Request("http://fixture.test/api/reports/alpha?format=text", {
     method: "POST",
     headers: {
+      accept: "application/yaml",
       "content-type": "application/json",
       "x-api-test": "header-only",
       "x-forwarded-for": "203.0.113.2, 10.0.0.1",
@@ -159,6 +161,7 @@ test("mount claims only the fixed /api prefix and preserves request context and 
     hasEnv: false,
   });
   assert.equal(response.status, 207);
+  assert.equal(response.headers.get("content-type"), "text/plain; charset=utf-8");
   assert.equal(response.headers.get("access-control-allow-origin"), "*");
   assert.equal(response.headers.get("set-cookie"), "session=value");
   assert.equal(observed.responses[0]?.clientIp, "203.0.113.2");
@@ -187,6 +190,60 @@ test("mount claims only the fixed /api prefix and preserves request context and 
   await again.text();
   assert.equal(observed.invocations, 2);
   assert.notEqual(observed.locals[0], observed.locals[1]);
+});
+
+test("REST negotiates YAML independently for input and output and preserves structured errors", async () => {
+  const schema = z.strictObject({ label: z.string() });
+  let invoked = 0;
+  const mount = createHttpMount({
+    catalog: createHttpCatalog([
+      route()({
+        id: "echo",
+        method: "POST",
+        path: "/echo",
+        description: "Echo.",
+        body: schema,
+        outputSchema: schema,
+        response: { headers: { vary: "Origin" } },
+        handler: ({ inputs }) => {
+          invoked += 1;
+          return inputs;
+        },
+      }),
+    ]),
+    identity: { title: "Test", version: "1" },
+  });
+  const send = (body: string, type: string, accept?: string) =>
+    call(mount, new Request("http://fixture.test/api/echo", {
+      method: "POST",
+      headers: { "content-type": type, ...(accept === undefined ? {} : { accept }) },
+      body,
+    }));
+
+  const json = await send("label: report", "application/yaml; charset=UTF-8");
+  assert.equal(json.headers.get("content-type"), "application/json; charset=utf-8");
+  assert.equal(json.headers.get("vary"), "Origin, Accept");
+  assert.deepEqual(await json.json(), { label: "report" });
+
+  const yaml = await send('{"label":"report"}', "application/json", "application/json;q=0.2, application/yaml");
+  assert.equal(yaml.status, 201);
+  assert.equal(yaml.headers.get("content-type"), "application/yaml; charset=utf-8");
+  assert.equal(yaml.headers.get("vary"), "Origin, Accept");
+  assert.deepEqual(parseYaml(await yaml.text()), { label: "report" });
+
+  const preferJson = await send("label: report", "application/yaml", "application/yaml;q=0, */*");
+  assert.equal(preferJson.headers.get("content-type"), "application/json; charset=utf-8");
+
+  for (const body of ["label: one\nlabel: two", "label: &label one\ncopy: *label", "label: !custom report", "label: one\n---\nlabel: two"]) {
+    const invalid = await send(body, "application/yaml", "application/yaml");
+    assert.equal(invalid.status, 400);
+    assert.equal(invalid.headers.get("content-type"), "application/yaml; charset=utf-8");
+    assert.equal(parseYaml(await invalid.text()).error.code, "INVALID_YAML");
+  }
+  const invalidInput = await send("label: 42", "application/yaml", "application/yaml");
+  assert.equal(invalidInput.status, 400);
+  assert.equal(parseYaml(await invalidInput.text()).error.code, "INVALID_INPUT");
+  assert.equal(invoked, 3);
 });
 
 test("discovery and docs use the one catalog and exact /api locations", async () => {
