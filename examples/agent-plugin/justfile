@@ -10,7 +10,7 @@ _:
 
 # Rebuild the committed Node bundle that plugins run (commit dist/example-agent-plugin.mjs)
 build:
-    esbuild src/index.ts --bundle --platform=node --target=node20 --format=esm --minify-whitespace --minify-syntax --banner:js='#!/usr/bin/env node' --outfile=dist/example-agent-plugin.mjs
+    esbuild src/index.ts --bundle --platform=node --target=node20 --format=esm --minify-whitespace --minify-syntax --banner:js=$'#!/usr/bin/env node\nimport { createRequire } from "node:module";\nconst require = createRequire(import.meta.url);' --outfile=dist/example-agent-plugin.mjs
     chmod +x dist/example-agent-plugin.mjs
     cp -f dist/example-agent-plugin.mjs dist/example-agent-plugin
     chmod +x dist/example-agent-plugin

@@ -9,7 +9,7 @@ Argsbarg MCP plugin template for Cursor and Claude Code marketplaces (Zod schema
 - **Cursor Plugin**: inline MCP configuration runs the committed bundle with `serve mcp --stdio`.
 - **Claude Code Plugin**: inline MCP configuration uses the same v9 stdio launch.
 - **In-repo skills**: `skills/example-agent-plugin/SKILL.md` discovered and loaded by agent platforms.
-- **Committed Node bundle**: `dist/example-agent-plugin.mjs` is self-contained (dependencies and schemas bundled), so a fresh clone runs with no install step. `dist/example-agent-plugin` is the extensionless executable copy consumed by MCP packaging.
+- **Committed Node bundle**: `dist/example-agent-plugin.mjs` is self-contained, so a fresh clone runs with no install step. Bundled CommonJS dependencies such as `yaml` can still load Node built-ins. `dist/example-agent-plugin` is the extensionless executable copy consumed by MCP packaging.
 
 ## Installation
 
