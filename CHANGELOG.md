@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- **Development:** add an opt-in, repo-only stdio smoke test for the built MCP Tasks fallback, progress, and completion behavior.
+
 ## [9.3.0] - 2026-11-21
 
 - **New:** configure the shared REST, JSON-RPC, and MCP HTTP listener with `server.listeners` for TCP, a private Unix socket, or both. Default TCP and existing `http.host`/`http.port` settings are unchanged when `server.listeners` is omitted.

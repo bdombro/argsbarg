@@ -79,6 +79,10 @@ format:
 lint:
     biome check ./src ./scripts
 
+# Check the built MCP Tasks stdio contract without a real client or credentials
+mcp-tasks-smoke: build
+    node --test scripts/mcp-tasks-smoke.test.ts
+
 # Bump version, test, build, tag, and publish to GitHub + npm
 release bump: test build
     node scripts/release.ts {{bump}}

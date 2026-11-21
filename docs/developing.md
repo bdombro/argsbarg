@@ -21,6 +21,24 @@ git diff --check
 
 `just build` replaces `dist/`. The release recipe is the only version-bump path; do not edit package versions manually.
 
+### MCP Tasks smoke test
+
+Run `just mcp-tasks-smoke` on v9 and again after the SDK migration. It launches
+the built server over stdio and checks discovery, listing, the no-Tasks fallback
+(no job starts), and a Tasks-capable client's native task handle, push updates,
+and final `tasks/get` result. The synthetic client advances the fixture through
+a private IPC channel only after subscription acknowledgment. It uses no
+network, model, or credentials and is not published in the npm package.
+
+For an opt-in real-host run, build first and point the existing `mcp-client-smoke`
+skill at `node /absolute/path/to/argsbarg/scripts/mcp-tasks-smoke-fixture.ts serve mcp --stdio`.
+Call only `start_synthetic_mining` with `{}`. Without the fixture's test IPC
+channel, the job progresses on its own. Inspect `server/discover` and the
+per-request Tasks capability separately from the tool result. If the host
+declares Tasks, look for a subscription acknowledgment, working and completed
+snapshots, and the final result `{ "rows": 3 }`. A normal tool call or a local
+smoke pass does not prove host push delivery, cancellation, or idle-agent wake-up.
+
 ## Structure
 
 - `src/core/` — invocation, errors, Zod, CLI declarations, config directory
