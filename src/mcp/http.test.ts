@@ -71,6 +71,7 @@ function post(body: unknown, method: string, name?: string): Request {
   const headers = new Headers({
     "content-type": "application/json",
     "Mcp-Method": method,
+    "MCP-Protocol-Version": "2026-07-28",
     ...(name === undefined ? {} : { "Mcp-Name": name }),
   });
   return new Request("http://fixture.test/mcp", {
@@ -168,7 +169,10 @@ test("requires routing headers before admission and preserves native admission r
       }),
     };
   });
-  const missing = new Request("http://fixture.test/mcp", { method: "POST", body: "{}" });
+  const missing = new Request("http://fixture.test/mcp", {
+    method: "POST",
+    body: JSON.stringify(requestBody("server/discover")),
+  });
   const missingResponse = await mount.handle(missing, mountContext());
   assert.equal(missingResponse.status, 400);
   assert.match(await missingResponse.text(), /Mcp-Method/);
@@ -211,14 +215,17 @@ test("admits before body parsing and returns 4xx for malformed JSON or header/bo
   assert.match(await conflict.text(), /Mcp-Name/);
 });
 
-test("keeps protocol errors as 200 JSON and notifications as empty 202 responses", async () => {
+test("uses appropriate HTTP statuses for protocol failures and accepted notifications", async () => {
   const mount = fixtureMount();
   const invalidMeta = requestBody("tools/list");
   (invalidMeta.params as Record<string, unknown>)._meta = {};
   const protocol = await mount.handle(post(invalidMeta, "tools/list"), mountContext());
-  assert.equal(protocol.status, 200);
+  assert.equal(protocol.status, 400);
   assert.equal(protocol.headers.get("content-type"), "application/json");
-  assert.equal((await protocol.json()).error.code, -32_602);
+  assert.equal((await protocol.json()).error.code, -32_020);
+  const unknown = await mount.handle(post(requestBody("unimplemented"), "unimplemented"), mountContext());
+  assert.equal(unknown.status, 404);
+  assert.equal((await unknown.json()).error.code, -32_601);
 
   const notification = await mount.handle(post(requestBody("tools/list", {}, null), "tools/list"), mountContext());
   assert.equal(notification.status, 202);

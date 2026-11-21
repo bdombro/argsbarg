@@ -7,6 +7,7 @@ import { randomUUID } from "node:crypto";
 import type { HttpWireContext, HttpWireHooks, InvokeFailureKind } from "../core/types.ts";
 import { extractTraceContext, formatTraceparent } from "../log/trace.ts";
 import type { HttpMount, HttpMountContext } from "../server/listener.ts";
+import { type OriginGateOptions, withOriginGate } from "../server/origin.ts";
 import { dispatchHttpRequest } from "./dispatch.ts";
 import { finishHttpResponse, httpErrorResponse } from "./encode.ts";
 import { responseDocumentFormat } from "./media.ts";
@@ -35,7 +36,7 @@ export interface HttpMountAccess {
 }
 
 /** Configuration for the package-internal REST mount. */
-export interface HttpMountOptions<Seed extends object = Record<never, never>> {
+export interface HttpMountOptions<Seed extends object = Record<never, never>> extends OriginGateOptions {
   /** One immutable catalog shared by dispatch and discovery. */
   readonly catalog: HttpRouteCatalog;
   /** Stable OpenAPI document identity supplied by the future factory owner. */
@@ -88,7 +89,7 @@ export function createHttpMount<Seed extends object = Record<never, never>>(
   /** Fixed catalog, wire policy, identity, and seed-local dependencies. */
   options: HttpMountOptions<Seed>,
 ): HttpMount {
-  return {
+  return withOriginGate("http.allowedOrigins", options, {
     claims: [{ kind: "prefix", path: "/api" }],
     async handle(request, context: HttpMountContext): Promise<Response> {
       const started = performance.now();
@@ -196,5 +197,5 @@ export function createHttpMount<Seed extends object = Record<never, never>>(
         return fail(error);
       }
     },
-  };
+  });
 }

@@ -4,8 +4,10 @@ The version is read from `package.json` at runtime, so the same code runs from
 `src/` (`node src/index.ts`) and from the compiled `dist/` (`npx example-api`).
 */
 
+import { allow, AppError, argsbarg, type Locals, type McpTask, McpTaskNotFoundError, method, route, tool } from "argsbarg";
+import { randomUUID } from "node:crypto";
+import { EventEmitter, once } from "node:events";
 import { readFileSync } from "node:fs";
-import { allow, AppError, argsbarg, type Locals, type McpTask, method, route, tool } from "argsbarg";
 import { z } from "zod";
 import { echoCommand } from "./commands/echo/command.ts";
 import { renderJsonCommand, RenderJsonInput } from "./commands/render-json/command.ts";
@@ -35,10 +37,10 @@ const WorkspaceOutput = z.strictObject({ id: z.string(), name: z.string() });
 const ShapeBody = z.strictObject({ input: ShapeAreaInput });
 /** App-owned in-memory database shared by explicit native declarations. */
 const db = AppDb.openDb();
-/** Next task identifier used by the app-owned in-memory task demonstration. */
-let nextTaskId = 0;
 /** App-owned task snapshots keyed by task ID and caller. */
 const taskStore = new Map<string, { readonly owner: string; task: McpTask }>();
+/** Signals committed changes. The example holds no queue of past snapshots. */
+const taskChanges = new EventEmitter().setMaxListeners(0);
 
 /** Returns an app-owned task after enforcing caller ownership. */
 function requireTask(
@@ -49,7 +51,7 @@ function requireTask(
 ): { readonly owner: string; task: McpTask } {
   const record = taskStore.get(taskId);
   if (record === undefined || record.owner !== caller) {
-    throw new AppError(`Task not found: ${taskId}`, { code: "TASK_NOT_FOUND", httpStatus: 404 });
+    throw new McpTaskNotFoundError();
   }
   return record;
 }
@@ -257,7 +259,7 @@ export const app = argsbarg({
         inputSchema: z.strictObject({ label: z.string() }),
         handler: ({ inputs, locals, mcp }) => {
           if (!mcp.tasks.available) return { label: inputs.label, mode: "inline" };
-          const taskId = `example-api-${++nextTaskId}`;
+          const taskId = randomUUID();
           const createdAt = new Date().toISOString();
           taskStore.set(taskId, {
             owner: locals.caller ?? "anonymous",
@@ -286,6 +288,7 @@ export const app = argsbarg({
                 structuredContent: { label: inputs.label },
               },
             };
+            taskChanges.emit(taskId);
           }, 25);
           timer.unref();
           const task = taskStore.get(taskId)?.task;
@@ -311,7 +314,24 @@ export const app = argsbarg({
             statusMessage: "Cancelled by caller",
             lastUpdatedAt: new Date().toISOString(),
           };
+          taskChanges.emit(taskId);
         }
+      },
+      watch: ({ taskId, locals, signal }) => {
+        const caller = locals.caller ?? "anonymous";
+        const initial = requireTask(taskId, caller).task;
+        return (async function* () {
+          let previous = initial;
+          while (!signal.aborted) {
+            const current = requireTask(taskId, caller).task;
+            if (current !== previous) {
+              previous = current;
+              yield current;
+            }
+            if (current.status !== "working" && current.status !== "input_required") return;
+            await once(taskChanges, taskId, { signal });
+          }
+        })();
       },
     },
   },

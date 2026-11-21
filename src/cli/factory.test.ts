@@ -8,7 +8,7 @@ import test from "node:test";
 import { parse as parseYaml } from "yaml";
 import { z } from "zod";
 import { allow } from "../core/invocation.ts";
-import { command } from "../core/types.ts";
+import { type AllowedOrigins, command } from "../core/types.ts";
 import { route } from "../http/routes.ts";
 import { method } from "../json-rpc/declaration.ts";
 import { createMcpRegistry, registerMcpTool } from "../mcp/registry.ts";
@@ -16,6 +16,121 @@ import { tool } from "../mcp/registry.ts";
 import { argsbarg } from "../runtime/cli.ts";
 import { compileGuardPlan } from "../runtime/invoke.ts";
 import type { HttpMount } from "../server/listener.ts";
+
+test("REST and MCP share the Origin policy and reject before admission", async () => {
+  const trusted = "https://browser.example";
+  const untrusted = "https://other.example";
+  const warnings: string[] = [];
+  const admitted: string[] = [];
+  const rest = route()({
+    id: "originProbe",
+    method: "GET",
+    path: "/origin-probe",
+    description: "Checks browser admission.",
+    outputSchema: z.object({ ok: z.boolean() }),
+    handler: () => ({ ok: true }),
+  });
+
+  /** Builds both mounts with identical settings through the app factory. */
+  function mounts(allowedOrigins?: AllowedOrigins): readonly HttpMount[] {
+    const originConfig = allowedOrigins === undefined ? {} : { allowedOrigins };
+    const app = argsbarg({
+      key: "origin-probe",
+      version: "1.0.0",
+      description: "Origin policy probe.",
+      commands: [],
+      http: {
+        routes: [rest],
+        ...originConfig,
+        hooks: { onRequest: () => { admitted.push("/api"); } },
+      },
+      mcp: {
+        tools: [tool()({
+          name: "origin_probe",
+          description: "Checks browser admission.",
+          inputSchema: z.object({}),
+          handler: () => ({ ok: true }),
+        })],
+        http: {
+          ...originConfig,
+          middleware: () => {
+            admitted.push("/mcp");
+            return { kind: "next", locals: {} };
+          },
+        },
+      },
+    });
+    const internals = app as unknown as {
+      createNativeHttpMounts(selected: undefined, onOriginRejected: (message: string) => void): readonly HttpMount[];
+    };
+    return internals.createNativeHttpMounts(undefined, (message) => { warnings.push(message); });
+  }
+
+  /** Sends a normal REST or MCP request with an optional browser Origin. */
+  async function send(mount: HttpMount, path: "/api" | "/mcp", origin?: string, preflight = false): Promise<Response> {
+    const request = path === "/api"
+      ? new Request("http://localhost/api/origin-probe", preflight
+          ? { method: "OPTIONS", headers: { "access-control-request-method": "GET" } }
+          : undefined)
+      : new Request("http://localhost/mcp", {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "mcp-method": "tools/list",
+            "mcp-protocol-version": "2026-07-28",
+          },
+          body: JSON.stringify({
+            jsonrpc: "2.0", id: 1, method: "tools/list",
+            params: { _meta: {
+              "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+              "io.modelcontextprotocol/clientCapabilities": {},
+            } },
+          }),
+        });
+    if (origin !== undefined) request.headers.set("Origin", origin);
+    return mount.handle(request, { signal: request.signal });
+  }
+
+  for (const path of ["/api", "/mcp"] as const) {
+    const setting = path === "/api" ? "http.allowedOrigins" : "mcp.http.allowedOrigins";
+    const initialCount = admitted.length;
+    const defaultMount = mounts().find((mount) => mount.claims.some((claim) => claim.path === path));
+    assert.ok(defaultMount);
+    const response = await send(defaultMount, path, untrusted);
+    assert.equal(response.status, 403);
+    const { error } = await response.json();
+    assert.equal(error.code, "ORIGIN_NOT_ALLOWED");
+    assert.ok(error.message.includes(`Origin "${untrusted}"`));
+    assert.ok(error.message.includes(setting));
+    assert.equal(warnings.at(-1), error.message);
+    const malformed = await send(defaultMount, path, "https://identity:secret@other.example");
+    assert.equal(malformed.status, 403);
+    assert.doesNotMatch(await malformed.text(), /secret/);
+    assert.doesNotMatch(warnings.at(-1) ?? "", /secret/);
+    assert.equal(admitted.length, initialCount);
+    assert.equal((await send(defaultMount, path)).status, 200);
+
+    const configured = mounts([trusted]).find((mount) => mount.claims.some((claim) => claim.path === path));
+    assert.ok(configured);
+    const allowed = await send(configured, path, trusted);
+    assert.equal(allowed.status, 200);
+    if (path === "/api") assert.equal(allowed.headers.get("access-control-allow-origin"), "*");
+    assert.equal((await send(configured, path, untrusted)).status, 403);
+
+    const wildcard = mounts("*").find((mount) => mount.claims.some((claim) => claim.path === path));
+    assert.ok(wildcard);
+    assert.equal((await send(wildcard, path, untrusted)).status, 200);
+    assert.deepEqual(admitted.slice(initialCount), [path, path, path]);
+
+    if (path === "/api") {
+      assert.equal((await send(configured, path, untrusted, true)).status, 403);
+      const preflight = await send(configured, path, trusted, true);
+      assert.equal(preflight.status, 204);
+      assert.equal(preflight.headers.get("access-control-allow-origin"), "*");
+    }
+  }
+  assert.throws(() => mounts(["*"]), /must be "\*" or a list of exact HTTP\(S\) origins/);
+});
 
 test("factory registers native REST, RPC, and MCP generated commands with local parity", async () => {
   const input = z.strictObject({ value: z.string() });
@@ -517,13 +632,14 @@ test("relay uses one explicit request and never falls back to local work", async
   });
   let fetchCalls = 0;
   const result = await app.invoke(
-    ["rpc", "sideEffect", "--relay", "https://relay.example/rpc", "--header", "X-Key: explicit"],
+    ["rpc", "sideEffect", "--relay", "https://relay.example/rpc", "--header", "X-Key: explicit", "--header", "Accept: application/json"],
     {
       stdin: "{}",
       fetch: async (url, init) => {
         fetchCalls += 1;
         assert.equal(String(url), "https://relay.example/rpc");
         assert.equal(new Headers(init?.headers).get("x-key"), "explicit");
+        assert.equal(new Headers(init?.headers).get("accept"), "application/json");
         return new Response(JSON.stringify({ jsonrpc: "2.0", id: 999, result: { ok: true } }), { status: 200 });
       },
     },
@@ -624,7 +740,7 @@ test("app hooks wrap every native and local-mirror invocation once", async () =>
   );
   const mcpRequest = new Request("http://localhost/mcp", {
     method: "POST",
-    headers: { "mcp-method": "tools/call", "mcp-name": "hookMcp" },
+    headers: { "mcp-method": "tools/call", "mcp-name": "hookMcp", "mcp-protocol-version": "2026-07-28" },
     body: JSON.stringify({
       jsonrpc: "2.0",
       id: 1,

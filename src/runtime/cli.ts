@@ -42,6 +42,7 @@ import { createHttpCatalog, type HttpRouteCatalog } from "../http/routes.ts";
 import { createJsonRpcCatalog, type JsonRpcCatalog } from "../json-rpc/catalog.ts";
 import { createJsonRpcHttpMount } from "../json-rpc/http.ts";
 import { createJsonRpcMirror, type JsonRpcMirrorEntries, type JsonRpcMirrorInput } from "../json-rpc/mirror.ts";
+import { LogEmitter } from "../log/emitter.ts";
 import { createMcpHttpMount } from "../mcp/http.ts";
 import { createMcpCliCalls, type McpCliCallInput, type McpCliCalls } from "../mcp/mirror.ts";
 import { createMcpRegistry, type McpRegistry } from "../mcp/registry.ts";
@@ -373,7 +374,7 @@ export class App {
         prepareBase: (base: InvocationBase<Locals>): InvocationBase<Locals> =>
           scopeChildInvocation(base, task.source),
         decorateInvoke: (
-          method: "tasks/get" | "tasks/update" | "tasks/cancel",
+          method: "tasks/get" | "tasks/update" | "tasks/cancel" | "subscriptions/listen",
           rawInputs: unknown,
           base: InvocationBase<Locals>,
           invoke: () => Promise<InvocationOutcome<unknown>>,
@@ -546,6 +547,8 @@ export class App {
   private parseCliMirrorArguments(
     /** Tokens after the generated command prefix. */
     argv: readonly string[],
+    /** Whether the relay uses the MCP transport's fixed headers. */
+    mcp: boolean,
   ): CliMirrorArguments | CliFailedCallResult {
     const positionals: string[] = [];
     const headers: [string, string][] = [];
@@ -590,7 +593,7 @@ export class App {
           "mcp-name",
           "transfer-encoding",
         ]);
-        if (blocked.has(lower)) {
+        if (blocked.has(lower) || (mcp && (lower === "accept" || lower === "mcp-protocol-version"))) {
           return callFailure("input", "FORBIDDEN_HEADER", "Relay header is owned by the transport");
         }
         if (names.has(lower)) {
@@ -641,7 +644,7 @@ export class App {
     },
   ): Promise<{ readonly exitCode: 0 | 1 | 130 }> {
     const prefix = argv[0] === "mcp" ? argv.slice(2) : argv.slice(1);
-    const parsed = this.parseCliMirrorArguments(prefix);
+    const parsed = this.parseCliMirrorArguments(prefix, argv[0] === "mcp");
     if ("kind" in parsed) {
       if (parsed.code === "HELP_REQUESTED") {
         await options.writer.stdout(generatedCliHelp(argv));
@@ -1058,12 +1061,19 @@ export class App {
   }
 
   async serveHttp(overrides: ServeOverrides = {}, selected?: readonly string[]): Promise<void> {
-    const mounts = this.createNativeHttpMounts(selected);
-    if (mounts.length === 0) throw new TypeError("No HTTP service is configured");
     const resolved = resolveHttpServeConfig(this.spec, overrides);
+    const logs = new LogEmitter({ spec: this.spec, resolved: resolved.log });
+    const subscriptionShutdown = new AbortController();
+    const mounts = this.createNativeHttpMounts(
+      selected,
+      resolved.log.errors ? (message) => logs.emit({ level: "warn", action: "http.origin_rejected", message }) : undefined,
+      subscriptionShutdown.signal,
+    );
+    if (mounts.length === 0) throw new TypeError("No HTTP service is configured");
     const handle = await startHttpListener({ mounts, targets: resolved.targets });
     let stopping: Promise<void> | undefined;
     const stop = (): void => {
+      subscriptionShutdown.abort();
       stopping ??= handle.stop();
     };
     process.once("SIGINT", stop);
@@ -1071,6 +1081,7 @@ export class App {
     try {
       await handle.terminal;
     } finally {
+      subscriptionShutdown.abort();
       process.off("SIGINT", stop);
       process.off("SIGTERM", stop);
       if (handle.state === "running") await handle.stop();
@@ -1080,7 +1091,11 @@ export class App {
   }
 
   /** Creates the fixed REST, RPC, and MCP mounts from the one catalog per configured surface. */
-  private createNativeHttpMounts(selected?: readonly string[]): readonly HttpMount[] {
+  private createNativeHttpMounts(
+    selected?: readonly string[],
+    onOriginRejected?: (message: string) => void,
+    subscriptionShutdown?: AbortSignal,
+  ): readonly HttpMount[] {
     const mounts: HttpMount[] = [];
     const services = this.selectedHttpServices(selected);
     if (
@@ -1089,6 +1104,7 @@ export class App {
     ) {
       mounts.push(
         createHttpMount({
+          allowedOrigins: this.spec.http?.allowedOrigins,
           catalog: this.httpCatalog,
           identity: {
             title: this.spec.key,
@@ -1096,6 +1112,7 @@ export class App {
             description: this.spec.description,
           },
           hooks: this.spec.http?.hooks,
+          onOriginRejected,
           trustProxy: this.spec.http?.trustProxy ?? false,
           seedLocals: () => ({ requestId: randomUUID() }) as Locals,
         }),
@@ -1124,6 +1141,8 @@ export class App {
       mounts.push(
         createMcpHttpMount({
           registry: this.mcpRegistry,
+          allowedOrigins: this.spec.mcp?.http?.allowedOrigins,
+          onOriginRejected,
           ...(this.mcpTasks === undefined ? {} : { tasks: this.mcpTasks }),
           serverInfo: { name: this.spec.key, version: this.spec.version },
           ...(this.spec.mcp?.instructions === undefined ? {} : { instructions: this.spec.mcp.instructions }),
@@ -1131,6 +1150,7 @@ export class App {
             ? {}
             : { middleware: this.spec.mcp.http.middleware }),
           seedLocals: () => ({ requestId: randomUUID() }) as Locals,
+          subscriptionShutdown,
         }),
       );
     }
@@ -1201,7 +1221,7 @@ export class App {
   /** Runs an app-owned task follow-up through MCP hooks and error reporting. */
   private async invokeMcpTaskWithHooks(
     /** Exact task follow-up method. */
-    method: "tasks/get" | "tasks/update" | "tasks/cancel",
+    method: "tasks/get" | "tasks/update" | "tasks/cancel" | "subscriptions/listen",
     /** Compiled task provider invocation. */
     invoke: () => Promise<InvocationOutcome<unknown>>,
     /** Raw task params parsed by the provider declaration. */

@@ -4,7 +4,6 @@ The version is read from `package.json` at runtime, so the same code runs from
 `src/` (`node src/index.ts`) and from the committed bundle (`dist/example-agent-plugin.mjs`).
 */
 
-import { readFileSync } from "node:fs";
 import {
   AppError,
   allow,
@@ -13,10 +12,13 @@ import {
   type Locals,
   type McpHttpMiddleware,
   type McpTask,
+  McpTaskNotFoundError,
   method,
   route,
   tool,
 } from "argsbarg";
+import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { z } from "zod";
 import { echoCommand } from "./commands/echo/command.ts";
 import { renderJsonCommand, RenderJsonInput } from "./commands/render-json/command.ts";
@@ -44,8 +46,6 @@ const WorkspaceOutput = z.strictObject({ id: z.string(), name: z.string() });
 const db = AppDb.openDb();
 /** Optional app-owned credential that protects every MCP entry point when configured. */
 const mcpToken = process.env.EXAMPLE_AGENT_PLUGIN_TOKEN;
-/** Next task identifier used by the plugin's app-owned in-memory task example. */
-let nextTaskId = 0;
 /** App-owned task snapshots keyed by ID and verified caller. */
 const taskStore = new Map<string, { readonly owner: string; task: McpTask }>();
 
@@ -64,7 +64,7 @@ function requireTask(
 ): { readonly owner: string; task: McpTask } {
   const record = taskStore.get(taskId);
   if (record === undefined || record.owner !== caller) {
-    throw new AppError(`Task not found: ${taskId}`, { code: "TASK_NOT_FOUND", httpStatus: 404 });
+    throw new McpTaskNotFoundError();
   }
   return record;
 }
@@ -249,7 +249,7 @@ export const app = argsbarg({
         inputSchema: z.strictObject({ label: z.string() }),
         handler: ({ inputs, locals, mcp }) => {
           if (!mcp.tasks.available) return { label: inputs.label, mode: "inline" };
-          const taskId = `plugin-${++nextTaskId}`;
+          const taskId = randomUUID();
           const createdAt = new Date().toISOString();
           taskStore.set(taskId, {
             owner: locals.caller ?? "anonymous",

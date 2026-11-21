@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [9.2.0] - 2026-11-21
+
+- **New:** MCP Tasks providers can supply `watch` to push committed task snapshots over HTTP SSE and stdio. Subscriptions authorize task IDs before acknowledgment and stop observing on disconnect without cancelling app-owned work.
+- **Breaking:** REST and MCP-over-HTTP use the same Origin policy. Browser requests now need exact origins in `http.allowedOrigins` or `mcp.http.allowedOrigins`; set the respective option to `"*"` to skip the check. Rejected requests get an actionable `403`. CORS and auth are unchanged.
+- **Breaking:** MCP HTTP now enforces protocol-version and routing headers. Send `MCP-Protocol-Version` matching request metadata and `Mcp-Method` matching the body. For task follow-ups, send the public task ID in `Mcp-Name`.
+- **Fix:** align MCP Tasks polling with the pinned 2026-07-28 profile: invocation-bound task handles, request-local capability checks, expanded wire validation, and isolated cancellation.
+- **Planning:** document why hosted MCP OAuth, URL-mode upstream sign-in, and broad interoperability checks are deferred from v9 to v10 planning. Task push remains planned for v9.
+
 ## [9.1.0] - 2026-11-20
 
 - **New:** add MCP 2026 Tasks protocol support through `mcp.tasks`. Apps provide caller-aware `get`, `update`, and `cancel` callbacks; Argsbarg handles capability negotiation, task references, guarded follow-up routing, and wire validation without owning queues or storage. Mounted child providers use exact mount-namespaced task IDs and retain child policy without ancestor fallback.
@@ -1296,7 +1304,8 @@ const cli = { ... } satisfies CliProgram;  // or : CliProgram
 - Migrate schemas: rename every `children` property to **`commands`**; move positional definitions to **`CliPositional`** objects on `positionals` and strip `positional` / `argMin` / `argMax` from flag definitions under `options` (flags only carry `name`, `description`, `kind`, and optional `shortName`).
 - Imports: use `CliPositional` where needed; replace `CliOptionDef` with `CliOption` or `CliPositional` as appropriate.
 
-[Unreleased]: https://github.com/bdombro/argsbarg/compare/v9.1.0...HEAD
+[Unreleased]: https://github.com/bdombro/argsbarg/compare/v9.2.0...HEAD
+[9.2.0]: https://github.com/bdombro/argsbarg/releases/tag/v9.2.0
 [9.1.0]: https://github.com/bdombro/argsbarg/releases/tag/v9.1.0
 [9.0.2]: https://github.com/bdombro/argsbarg/releases/tag/v9.0.2
 [9.0.1]: https://github.com/bdombro/argsbarg/releases/tag/v9.0.1

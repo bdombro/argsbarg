@@ -120,7 +120,11 @@ export type McpCompleteResult = {
 } & Readonly<Record<string, unknown>>;
 
 /** Decodes a JSON string or unknown JSON value into the v9 MCP request profile. */
-export function decodeMcpRequest(input: unknown): McpDecodeResult {
+export function decodeMcpRequest(
+  input: unknown,
+  /** Validates HTTP routing headers after envelope parsing but before version negotiation. */
+  checkHeaders?: (method: string, params: Readonly<Record<string, unknown>>) => string | undefined,
+): McpDecodeResult {
   let value = input;
   if (typeof input === "string") {
     try {
@@ -143,11 +147,14 @@ export function decodeMcpRequest(input: unknown): McpDecodeResult {
     return protocolError(id.value, -32_600, "Invalid Request");
   }
 
-  const paramsValue = value.params ?? {};
+  const paramsValue = value.params === undefined ? {} : value.params;
   if (!isRecord(paramsValue) || Array.isArray(paramsValue)) {
     return protocolError(id.value, -32_602, "Invalid params: params must be an object");
   }
   const params = paramsValue;
+
+  const mismatch = checkHeaders?.(value.method, params);
+  if (mismatch !== undefined) return protocolError(id.value, -32_020, mismatch);
 
   if (value.method === "initialize") {
     return {
@@ -157,6 +164,9 @@ export function decodeMcpRequest(input: unknown): McpDecodeResult {
   }
 
   const metaValue = params._meta;
+  if (id.value === null && (metaValue === undefined || isRecord(metaValue))) {
+    return { kind: "request", request: { jsonrpc: "2.0", method: value.method, params } };
+  }
   if (!isRecord(metaValue) || Array.isArray(metaValue)) {
     return protocolError(id.value, -32_602, "Invalid params: _meta must be an object");
   }
@@ -210,6 +220,34 @@ export function decodeMcpRequest(input: unknown): McpDecodeResult {
       },
     },
   };
+}
+
+/** The extension makes the public task ID the HTTP routing name for these methods. */
+export function isMcpTaskMethod(method: string): boolean {
+  return method === "tasks/get" || method === "tasks/update" || method === "tasks/cancel";
+}
+
+/** Encodes a routed name that cannot be carried verbatim as an HTTP field value. */
+export function encodeMcpName(name: string): string {
+  return /^[\x20-\x7e\t]*$/.test(name) && name.trim() === name &&
+    !(name.startsWith("=?base64?") && name.endsWith("?="))
+    ? name
+    : `=?base64?${Buffer.from(name, "utf8").toString("base64")}?=`;
+}
+
+/** Decodes the routing sentinel, rejecting invalid Base64 or UTF-8. */
+export function decodeMcpName(name: string): string | undefined {
+  if (!name.startsWith("=?base64?") || !name.endsWith("?=")) {
+    return /^[\x20-\x7e\t]*$/.test(name) ? name : undefined;
+  }
+  const encoded = name.slice("=?base64?".length, -2);
+  const bytes = Buffer.from(encoded, "base64");
+  if (bytes.toString("base64") !== encoded) return undefined;
+  try {
+    return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
+  } catch {
+    return undefined;
+  }
 }
 
 /** Builds a JSON-RPC protocol error envelope. */

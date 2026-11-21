@@ -12,6 +12,7 @@ import type {
 } from "../cli/mirror.ts";
 import { invokeMcpRegisteredTool, type McpRegisteredToolCall } from "./dispatcher.ts";
 import {
+  encodeMcpName,
   MCP_CLIENT_CAPABILITIES_KEY,
   MCP_PROTOCOL_VERSION,
   MCP_PROTOCOL_VERSION_KEY,
@@ -178,8 +179,10 @@ async function invokeRelay(
 
   const headers = new Headers(context.headers as HeadersInit);
   headers.set("content-type", "application/json");
+  headers.set("Accept", "application/json, text/event-stream");
+  headers.set("MCP-Protocol-Version", MCP_PROTOCOL_VERSION);
   headers.set("Mcp-Method", "tools/call");
-  headers.set("Mcp-Name", input.name);
+  headers.set("Mcp-Name", encodeMcpName(input.name));
 
   let response: Response;
   try {

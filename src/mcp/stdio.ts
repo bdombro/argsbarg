@@ -6,15 +6,17 @@ It owns framing, raw protocol writes, request cancellation, progress, and concur
 import type { Readable, Writable } from "node:stream";
 import type { InvocationBase, NameView } from "../core/invocation.ts";
 import { invocationScopeState } from "../runtime/invocation-scope.ts";
-import { dispatchMcpRequest } from "./dispatcher.ts";
+import { dispatchMcpRequestDetailed } from "./dispatcher.ts";
 import {
   decodeMcpRequest,
+  isMcpTaskMethod,
   type McpRequest,
   type McpRequestId,
   type McpServerInfo,
   mcpErrorResponse,
 } from "./protocol.ts";
 import type { McpRegistry } from "./registry.ts";
+import { deliverTaskSubscription } from "./task-subscriptions.ts";
 import type { McpTaskRuntime } from "./tasks.ts";
 
 /** Typed request-local progress control supplied in MCP seed locals. */
@@ -56,7 +58,7 @@ interface ActiveRequest {
 /** Writes complete protocol frames in order without blocking dispatch or decoding. */
 interface FrameWriter {
   /** Queues one JSON message, optionally skipping it when its request became terminal. */
-  enqueue(message: object, shouldWrite?: () => boolean): void;
+  enqueue(message: object, shouldWrite?: () => boolean): Promise<void>;
   /** Waits until every accepted frame has completed or failed. */
   drain(): Promise<void>;
 }
@@ -71,6 +73,7 @@ export async function serveMcpStdio<Seed extends object>(options: McpStdioOption
   const env = processEnvView();
   const active = new Map<McpRequestId, ActiveRequest>();
   const running = new Set<Promise<void>>();
+  const subscriptionShutdown = new AbortController();
   let buffer = "";
   let loopFailure: unknown;
   let rejectFailure: (error: unknown) => void = () => {};
@@ -147,7 +150,8 @@ export async function serveMcpStdio<Seed extends object>(options: McpStdioOption
       ...seed,
       reportProgress: (progress, total, message) => {
         const progressToken = request.meta?.progressToken;
-        if (requestState.terminal || requestState.controller.signal.aborted || progressToken === undefined) {
+        if (isMcpTaskMethod(request.method) || request.method === "subscriptions/listen" ||
+          requestState.terminal || requestState.controller.signal.aborted || progressToken === undefined) {
           return;
         }
         if (
@@ -181,15 +185,22 @@ export async function serveMcpStdio<Seed extends object>(options: McpStdioOption
       source: "local",
       surface: "mcp",
     };
-    const response = await dispatchMcpRequest({
+    const { response, subscription } = await dispatchMcpRequestDetailed({
       base,
       instructions: options.instructions,
       registry: options.registry,
       ...(options.tasks === undefined ? {} : { tasks: options.tasks }),
       request,
       serverInfo: options.serverInfo,
+      streamSubscriptions: true,
     });
     requestState.terminal = true;
+    if (subscription !== undefined) {
+      const { signal } = requestState.controller;
+      await deliverTaskSubscription(subscription, (frame, watchSignal) =>
+        writer.enqueue(frame, () => !signal.aborted && !watchSignal?.aborted), signal, subscriptionShutdown.signal);
+      return;
+    }
     if (response !== undefined) {
       writer.enqueue(response, () => !requestState.controller.signal.aborted);
     }
@@ -243,6 +254,7 @@ export async function serveMcpStdio<Seed extends object>(options: McpStdioOption
       const trailing = `${buffer}${decoder.decode()}`.trim();
       if (trailing.length > 0) acceptFrame(trailing);
     }
+    subscriptionShutdown.abort();
     const settled = await Promise.allSettled([...running]);
     const rejected = settled.find((result) => result.status === "rejected");
     if (loopFailure === undefined && rejected !== undefined && rejected.status === "rejected") {
@@ -252,6 +264,7 @@ export async function serveMcpStdio<Seed extends object>(options: McpStdioOption
     if (loopFailure !== undefined) throw loopFailure;
     options.emitLifecycle?.("MCP stdio adapter stopped", "mcp.server.stop");
   } finally {
+    subscriptionShutdown.abort();
     options.signal?.removeEventListener("abort", onAbort);
     output.off("error", onOutputError);
     for (const request of active.values()) {
@@ -326,6 +339,7 @@ function createFrameWriter(
         failed ??= error;
         fail(error);
       });
+      return current;
     },
     async drain() {
       await tail;

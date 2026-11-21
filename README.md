@@ -112,7 +112,7 @@ Bare `serve` starts every configured HTTP mount. Name a surface, such as `serve 
 
 `cli.guard` protects user-authored commands, and `mcp.guard` protects MCP tool calls. An operation `guard` supplements its surface default; `{ mode: "override", run }` replaces only that default, while `"public"` removes only that default. Generated `api`, `rpc`, and `mcp call` commands run the target surface policy, never a synthetic CLI guard.
 
-For MCP over HTTP, `mcp.http.middleware` alone owns transport admission and request seeding. It returns either `{ kind: "respond", response }` or `{ kind: "next", locals }`. Those locals feed the MCP guard and tool guard. Stdio and local `mcp call` have no HTTP shortcut: guards derive callers from the exclusive local environment source.
+For MCP over HTTP, `mcp.http.middleware` owns app admission and request seeding after the [Origin check](docs/mcp.md#launch). It returns either `{ kind: "respond", response }` or `{ kind: "next", locals }`. Those locals feed the MCP guard and tool guard. Stdio and local `mcp call` have no HTTP shortcut: guards derive callers from the exclusive local environment source.
 
 Standalone apps can be composed by exact mount key:
 

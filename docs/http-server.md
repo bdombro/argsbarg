@@ -32,6 +32,15 @@ All REST operations are mounted under `/api`:
 
 Launch with `myapp serve http` to start only REST. Bare `myapp serve` starts every configured REST, JSON-RPC, and MCP HTTP mount; `myapp serve http rpc` selects only the named HTTP mounts. Add `--host` or `--port` as needed.
 
+If a request sends `Origin`, add the browser application's exact HTTP(S) origin
+(scheme, host, and port if non-default; no trailing slash) to
+`http.allowedOrigins`, for example `["https://app.example.com"]`. The default
+rejects supplied origins with `403` and tells you which origin to configure.
+Set `http.allowedOrigins: "*"` in app configuration to explicitly skip the check.
+Requests without `Origin` still go through normal admission. This policy also
+applies to preflight requests, and is separate from REST's CORS headers and auth.
+[MCP over HTTP](mcp.md#launch) uses the same setting under `mcp.http`.
+
 Use `Content-Type: application/yaml` to send a YAML mapping, or `Accept: application/yaml` to get YAML for ordinary results and structured errors. The headers are independent. JSON stays the default response format; native `Response` values, including downloads and streams, keep their original body and media type. OpenAPI advertises JSON and YAML, but `/api/openapi.json` itself is always JSON.
 
 YAML input is one document with JSON-compatible values. Duplicate keys, aliases, and custom tags are rejected.

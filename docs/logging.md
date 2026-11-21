@@ -21,6 +21,10 @@ JSON mode emits ECS-shaped NDJSON. Set `format: "text"` for local terminal outpu
 
 HTTP access records include safe request method, path, status, duration, trace fields, and request id. Native request bodies, headers, credentials, and locals are not logged by argsbarg.
 
+An Origin rejection on `/api` or `/mcp` emits an `http.origin_rejected` warning
+unless `log.errors` is disabled. It names the setting to change and includes
+the submitted origin only when it is safe to display.
+
 ## Error reporting
 
 ```typescript

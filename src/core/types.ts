@@ -417,6 +417,9 @@ export interface CliAppConfig<Seed extends object = Locals> {
   readonly guard?: Guard<unknown, Seed, object>;
 }
 
+/** Exact browser origins to admit, or an explicit opt-out from Origin checking. */
+export type AllowedOrigins = readonly string[] | "*";
+
 /** Independent native REST registration exposed by the app factory. */
 export interface HttpAppConfig {
   /** Explicit REST routes consumed by one fixed catalog. */
@@ -429,6 +432,8 @@ export interface HttpAppConfig {
   readonly port?: number;
   /** Whether wire hooks may use forwarded client-address headers. */
   readonly trustProxy?: boolean;
+  /** Exact trusted HTTP(S) origins, or "*" to skip the Origin gate. */
+  readonly allowedOrigins?: AllowedOrigins;
   /** Observe-only hooks for REST requests. */
   readonly hooks?: HttpWireHooks;
 }

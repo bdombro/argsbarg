@@ -73,7 +73,18 @@ For Streamable HTTP, configure the MCP surface and run it on the shared listener
 myapp serve mcp
 ```
 
-HTTP MCP is exactly `/mcp` and requires `Mcp-Method`; `tools/call` also requires `Mcp-Name`. Stdio writes protocol data only to stdout. One process selects one MCP transport.
+HTTP MCP is exactly `/mcp`. Send `MCP-Protocol-Version: 2026-07-28`,
+`Accept: application/json, text/event-stream`, and `Mcp-Method` on each POST.
+`Mcp-Name` carries `params.name` for `tools/call` and the public `params.taskId`
+for `tasks/get`, `tasks/update`, and `tasks/cancel`. Routing headers must match
+the body. MCP over HTTP uses the same [Origin policy as REST](http-server.md#wire):
+set `mcp.http.allowedOrigins` to a list of exact HTTP(S) origins
+(for example `["https://app.example.com"]`), or to `"*"` to skip Argsbarg's
+check. The default rejects supplied origins with an actionable `403`; requests
+without `Origin` still go through middleware and guards. Use `"*"` for a conforming
+deployment only when a trusted ingress validates Origin and direct access is
+blocked. Stdio writes protocol data only to stdout. One process selects one MCP
+transport.
 
 Client configuration:
 
@@ -117,11 +128,17 @@ handler: async ({ inputs, locals, signal, mcp }) => {
 ```
 
 `available` is true only when the app registered a provider and the current client
-declared `io.modelcontextprotocol/tasks`. `reference` validates the app-owned snapshot
-and emits `resultType: "task"`. Argsbarg routes `tasks/get`, `tasks/update`, and
+declared `io.modelcontextprotocol/tasks`. A tool that has no inline path may throw
+`McpTasksRequiredError` before creating work; a client missing the capability gets
+JSON-RPC `-32021`. Return `reference` only from the invocation that created it.
+It emits a flat `resultType: "task"` handle without state-specific payloads.
+Argsbarg routes `tasks/get`, `tasks/update`, and
 `tasks/cancel`, applies the MCP surface guard and app hooks to every follow-up, and
-passes fresh request-local `locals` and `signal` to the provider. The provider owns
-ownership checks, state, pending input, results, cancellation, persistence, and expiry.
+passes fresh request-local `locals`, `signal`, `protocolVersion`, and immutable
+`clientCapabilities` to the provider. Throw `McpTaskNotFoundError` for missing,
+expired, or inaccessible tasks (`-32602`). Unexpected provider failures return
+`-32603`. The provider owns authorization, state, pending input, results, cancellation,
+persistence, and expiry.
 
 Mounted child apps keep their own Tasks provider. A child task reference is public as
 `${mountPath.join("__")}__${localTaskId}`; follow-ups strip that exact prefix before
@@ -136,6 +153,21 @@ Task snapshots are `working`, `input_required`, `completed`, `failed`, or `cance
 They require `taskId`, `createdAt`, `lastUpdatedAt`, and `ttlMs`; completed tasks add a
 `result`, failed tasks add a JSON-RPC `error`, and input-required tasks add
 `inputRequests`. `update` and `cancel` acknowledge with an empty complete result.
+Polling follow-ups do not emit inline progress. Providers can opt into task
+status push with `watch`. Clients that declare `io.modelcontextprotocol/tasks`
+can send `subscriptions/listen` with `notifications: { taskIds: [taskId] }`
+over HTTP SSE or stdio. On HTTP use `Mcp-Method: subscriptions/listen` and omit
+`Mcp-Name`. The acknowledgment lists only authorized IDs that the server
+agreed to watch; subsequent `notifications/tasks` carry detailed snapshots and
+the subscription ID. Progress during a job can be shown through snapshot
+fields such as `statusMessage`; these are not `notifications/progress` frames.
+
+After subscribing, including after reconnect, call `tasks/get` to catch changes
+that happened before the watch opened. Do not overwrite a newer snapshot with
+an older one (`lastUpdatedAt`). Closing the SSE stream or sending stdio
+`notifications/cancelled` for the subscription stops observing; it does not
+cancel the durable job. Use `tasks/cancel` for that. Whether completion starts
+another agent turn depends on the host.
 See [Durable MCP work](use-cases/tasks.md) for the ownership and storage split.
 
 ## Local mirror and relay
@@ -145,7 +177,7 @@ printf '%s\n' '{"name":"Ada"}' | myapp mcp call greet
 printf '%s\n' '{"name":"Ada"}' | myapp mcp call greet --relay https://service.example/mcp
 ```
 
-The relay performs exactly one `tools/call` request with protocol metadata and framework-owned routing headers. It never discovers tools, forwards ambient credentials, or falls back locally.
+The relay performs exactly one `tools/call` request with protocol metadata and framework-owned routing headers. It reads a JSON reply; it does not consume SSE or poll tasks. It never discovers tools, forwards ambient credentials, or falls back locally.
 
 ## Packaging
 

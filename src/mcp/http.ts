@@ -4,26 +4,31 @@ It owns the exact /mcp mount, native HTTP framing, middleware, first-progress SS
 */
 
 import type { Denial, NameView } from "../core/invocation.ts";
-import type { Locals } from "../core/types.ts";
+import type { AllowedOrigins, Locals } from "../core/types.ts";
 import type { HttpMount, HttpMountContext } from "../server/listener.ts";
-import type { McpDispatchResponse } from "./dispatcher.ts";
-import { dispatchMcpRequestDetailed } from "./dispatcher.ts";
+import { type OriginGateOptions, withOriginGate } from "../server/origin.ts";
+import { dispatchMcpRequestDetailed, type McpDispatchResponse } from "./dispatcher.ts";
+import { MCP_HANDLER_STARTED } from "./progress.ts";
 import {
+  decodeMcpName,
   decodeMcpRequest,
+  isMcpTaskMethod,
+  MCP_PROTOCOL_VERSION_KEY,
   type McpErrorResponse,
   type McpRequest,
   type McpResultResponse,
   type McpServerInfo,
+  mcpErrorResponse,
 } from "./protocol.ts";
-import { MCP_HANDLER_STARTED } from "./progress.ts";
 import type { McpRegistry } from "./registry.ts";
+import { deliverTaskSubscription, type TaskSubscription } from "./task-subscriptions.ts";
 import type { McpTaskRuntime } from "./tasks.ts";
 
 /** Stable mount-local view of the MCP routing headers before the body is consumed. */
 export interface McpHttpMiddlewareContext {
   /** Exact `Mcp-Method` value supplied by the caller. */
   readonly method: string;
-  /** Exact `Mcp-Name` value, omitted when the caller did not supply it. */
+  /** Decoded `Mcp-Name` value, omitted when the caller did not supply it. */
   readonly name?: string;
   /** Case-insensitive name-only view over the native request headers. */
   readonly headers: NameView;
@@ -54,12 +59,14 @@ export type McpHttpMiddleware<Seed extends object> = (
 
 /** Public MCP HTTP policy configuration. */
 export interface McpHttpConfig<Seed extends object = Locals> {
+  /** Exact trusted HTTP(S) origins, or "*" to skip the Origin gate. */
+  readonly allowedOrigins?: AllowedOrigins;
   /** Optional pre-dispatch middleware that verifies and seeds one HTTP caller. */
   readonly middleware?: McpHttpMiddleware<Seed>;
 }
 
 /** Inputs for constructing the package-internal MCP HTTP mount. */
-export interface CreateMcpHttpMountOptions<Seed extends object> {
+export interface CreateMcpHttpMountOptions<Seed extends object> extends OriginGateOptions {
   /** One fixed startup registry shared by discovery, listing, and calls. */
   readonly registry: McpRegistry<Seed>;
   /** Optional configured app-owned Tasks provider runtime. */
@@ -72,6 +79,8 @@ export interface CreateMcpHttpMountOptions<Seed extends object> {
   readonly middleware?: McpHttpMiddleware<Seed>;
   /** Creates runtime-owned framework locals once for each accepted request. */
   readonly seedLocals?: () => Seed;
+  /** Graceful listener stop ends subscriptions before draining ordinary calls. */
+  readonly subscriptionShutdown?: AbortSignal;
 }
 
 /** A first event from a request-local progress channel. */
@@ -89,6 +98,8 @@ type DispatchRace =
       readonly response: McpDispatchResponse;
       /** Exact D2 outcome for a completed registered tool call. */
       readonly outcome?: import("../core/invocation.ts").InvocationOutcome<unknown>;
+      /** Prepared subscription that has not emitted a frame yet. */
+      readonly subscription?: TaskSubscription;
     }
   | {
       /** The request's first valid progress notification arrived first. */
@@ -111,10 +122,10 @@ interface Deferred<T> {
 
 /** Creates the exact `/mcp` mount around one accepted registry and dispatcher. */
 export function createMcpHttpMount<Seed extends object>(options: CreateMcpHttpMountOptions<Seed>): HttpMount {
-  return {
+  return withOriginGate("mcp.http.allowedOrigins", options, {
     claims: [{ kind: "exact", path: "/mcp" }],
     handle: (request, context) => handleMcpHttpRequest(options, request, context),
-  };
+  });
 }
 
 /** Handles one exact mount request without importing Node listener transport state. */
@@ -127,14 +138,14 @@ async function handleMcpHttpRequest<Seed extends object>(
     return new Response(null, { status: 405, headers: { Allow: "POST" } });
   }
 
-  const method = readRoutingHeader(request.headers, "Mcp-Method");
-  if (method === undefined || method.length === 0) return requestError("Missing or invalid Mcp-Method header");
-  const name = readRoutingHeader(request.headers, "Mcp-Name");
-  if (name !== undefined && name.length === 0) return requestError("Invalid Mcp-Name header");
+  const method = request.headers.get("Mcp-Method");
+  const rawName = request.headers.get("Mcp-Name");
+  const name = rawName === null ? undefined : decodeMcpName(rawName);
+  const validName = rawName === null || (name !== undefined && name.length > 0);
   const headers = headerView(new Headers(request.headers));
 
   let middlewareLocals: Seed = {} as Seed;
-  if (options.middleware !== undefined) {
+  if (options.middleware !== undefined && method && validName) {
     let middlewareResult: unknown;
     try {
       middlewareResult = await options.middleware(request, {
@@ -153,17 +164,36 @@ async function handleMcpHttpRequest<Seed extends object>(
     middlewareLocals = middlewareResult.locals;
   }
 
-  let body: unknown;
+  let body: string;
   try {
-    body = JSON.parse(await request.text()) as unknown;
+    body = await request.text();
   } catch {
-    return requestError("Invalid JSON request body");
+    return jsonResponse(mcpErrorResponse(null, -32_700, "Could not read request body"), 400);
   }
-
-  const decoded = decodeMcpRequest(body);
-  if (decoded.kind === "error") return jsonResponse(decoded.response, mcpProtocolHttpStatus(decoded.response));
-  const headerError = validateMethodHeaders(decoded.request, method, name);
-  if (headerError !== undefined) return requestError(headerError);
+  const decoded = decodeMcpRequest(body, (bodyMethod, params) => {
+    const legacyHint = bodyMethod === "initialize"
+      ? "; this server supports MCP 2026-07-28 with per-request metadata"
+      : "";
+    if (!validName) return "Invalid Mcp-Name header";
+    if (method !== bodyMethod) return `Mcp-Method does not match the request method${legacyHint}`;
+    const meta = params._meta;
+    const version = request.headers.get("MCP-Protocol-Version");
+    if (!version || typeof meta !== "object" || meta === null ||
+      !(MCP_PROTOCOL_VERSION_KEY in meta) || meta[MCP_PROTOCOL_VERSION_KEY] !== version) {
+      return `MCP-Protocol-Version is missing or does not match request metadata${legacyHint}`;
+    }
+    const bodyName = bodyMethod === "tools/call" ? params.name : isMcpTaskMethod(bodyMethod) ? params.taskId : undefined;
+    if (bodyMethod === "tools/call" || isMcpTaskMethod(bodyMethod)) {
+      if (name === undefined || (typeof bodyName === "string" && bodyName.length > 0 && name !== bodyName)) {
+        return "Mcp-Name is missing or does not match the request name";
+      }
+    } else if ((bodyMethod === "server/discover" || bodyMethod === "tools/list" ||
+      bodyMethod === "subscriptions/listen") && name !== undefined) {
+      return "Mcp-Name is not valid for this MCP method";
+    }
+    return undefined;
+  });
+  if (decoded.kind === "error") return jsonResponse(decoded.response, 400);
 
   const requestController = linkedController(context.signal);
   try {
@@ -193,12 +223,14 @@ async function handleMcpHttpRequest<Seed extends object>(
         headers,
       },
       serverInfo: options.serverInfo,
+      streamSubscriptions: true,
       ...(options.instructions === undefined ? {} : { instructions: options.instructions }),
     }).then(
       (detail): DispatchRace => ({
         kind: "terminal",
         response: detail.response,
         ...(detail.outcome === undefined ? {} : { outcome: detail.outcome }),
+        ...(detail.subscription === undefined ? {} : { subscription: detail.subscription }),
       }),
       (): DispatchRace => ({ kind: "failure" }),
     );
@@ -214,6 +246,9 @@ async function handleMcpHttpRequest<Seed extends object>(
     }
     if (winner.kind === "terminal") {
       terminal = true;
+      if (winner.subscription !== undefined) {
+        return subscriptionResponse(winner.subscription, requestController, options.subscriptionShutdown);
+      }
       requestController.unlink();
       if (
         winner.outcome?.kind === "denied" &&
@@ -223,7 +258,12 @@ async function handleMcpHttpRequest<Seed extends object>(
       }
       return winner.response === undefined
         ? new Response(null, { status: 202 })
-        : jsonResponse(winner.response, mcpProtocolHttpStatus(winner.response));
+        : jsonResponse(
+            winner.response,
+            mcpProtocolHttpStatus(winner.response),
+            isMcpTaskMethod(decoded.request.method) || decoded.request.method === "subscriptions/listen" ||
+              ("result" in winner.response && isTaskResult(winner.response.result)),
+          );
     }
 
     const stream = progressStream(
@@ -242,8 +282,9 @@ async function handleMcpHttpRequest<Seed extends object>(
     return new Response(stream, {
       status: 200,
       headers: {
-        "cache-control": "no-cache",
+        "cache-control": "no-store",
         "content-type": "text/event-stream",
+        "x-accel-buffering": "no",
       },
     });
   } catch {
@@ -251,6 +292,44 @@ async function handleMcpHttpRequest<Seed extends object>(
     requestController.unlink();
     return serverError();
   }
+}
+
+/** Streams task notifications with at most one pending frame per watch. */
+function subscriptionResponse(
+  subscription: TaskSubscription,
+  requestController: ReturnType<typeof linkedController>,
+  shutdown?: AbortSignal,
+): Response {
+  const { signal } = requestController;
+  const { readable, writable } = new TransformStream<Uint8Array>();
+  const writer = writable.getWriter();
+  const encoder = new TextEncoder();
+  /** Disconnects the writer when the listener closes the request. */
+  const abort = (): void => {
+    void writer.abort(signal.reason).catch(() => {
+      // The response body may already be cancelled.
+    });
+  };
+  signal.addEventListener("abort", abort, { once: true });
+  if (signal.aborted) abort();
+  void writer.closed.catch(() => requestController.abort());
+  void deliverTaskSubscription(subscription, async (frame, watchSignal) => {
+    if (watchSignal?.aborted || signal.aborted) return;
+    await writer.write(encodeSse(encoder, frame));
+  }, signal, shutdown)
+    .then(() => signal.aborted ? undefined : writer.close())
+    .catch(() => requestController.abort())
+    .finally(() => {
+      signal.removeEventListener("abort", abort);
+      requestController.unlink();
+    });
+  return new Response(readable, {
+    headers: {
+      "cache-control": "no-store",
+      "content-type": "text/event-stream",
+      "x-accel-buffering": "no",
+    },
+  });
 }
 
 /** Builds a request-local reporter that validates monotonic progress and delivers one first event. */
@@ -264,7 +343,8 @@ function progressReporter(
   /** Receives later events after the first event has won the HTTP race. */
   onEvent: (event: ProgressEvent) => void;
 } {
-  const token = request.meta?.progressToken;
+  const token = isMcpTaskMethod(request.method) || request.method === "subscriptions/listen"
+    ? undefined : request.meta?.progressToken;
   let previous = -1;
   let first = true;
   let handlerStarted = false;
@@ -416,32 +496,6 @@ function encodeSse(encoder: TextEncoder, message: unknown): Uint8Array {
   return encoder.encode(`data: ${JSON.stringify(message)}\n\n`);
 }
 
-/** Validates post-decode MCP routing header consistency. */
-function validateMethodHeaders(request: McpRequest, method: string, name: string | undefined): string | undefined {
-  if (request.method !== method) return "Mcp-Method does not match the MCP request method";
-  const bodyName = request.params.name;
-  if (request.method === "tools/call") {
-    if (name === undefined) return "Missing Mcp-Name header";
-    if (typeof bodyName !== "string" || name !== bodyName) return "Mcp-Name does not match the MCP tool name";
-    return undefined;
-  }
-  if (
-    (request.method === "server/discover" ||
-      request.method === "tools/list" ||
-      request.method === "initialize" ||
-      request.method.startsWith("tasks/")) &&
-    name !== undefined
-  ) {
-    return "Mcp-Name is not valid for this MCP method";
-  }
-  return undefined;
-}
-
-/** Returns a stable case-sensitive routing header value from Fetch headers. */
-function readRoutingHeader(headers: Headers, name: string): string | undefined {
-  return headers.get(name) ?? undefined;
-}
-
 /** Exposes only exact header lookup through the accepted D2 HTTP source contract. */
 function headerView(headers: Headers): NameView {
   const view: NameView = {
@@ -450,27 +504,29 @@ function headerView(headers: Headers): NameView {
   return Object.freeze(view);
 }
 
-/** Returns a native request-framing error without entering MCP dispatch. */
-function requestError(message: string): Response {
-  return jsonResponse({ error: message }, 400);
-}
-
 /** Returns a sanitized unexpected adapter failure. */
 function serverError(): Response {
   return jsonResponse({ error: "Internal server error" }, 500);
 }
 
 /** Serializes one protocol or native JSON body with exact application/json media type. */
-function jsonResponse(body: unknown, status = 200): Response {
+function jsonResponse(body: unknown, status = 200, noStore = false): Response {
   return new Response(JSON.stringify(body), {
     status,
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", ...(noStore ? { "cache-control": "no-store" } : {}) },
   });
 }
 
+/** Recognizes a creation handle for HTTP cache policy. */
+function isTaskResult(result: unknown): boolean {
+  return typeof result === "object" && result !== null &&
+    "resultType" in result && result.resultType === "task";
+}
+
 /** Maps MCP-defined HTTP-bound protocol errors without changing ordinary JSON-RPC status. */
-function mcpProtocolHttpStatus(response: McpErrorResponse | McpResultResponse): 200 | 400 {
+function mcpProtocolHttpStatus(response: McpErrorResponse | McpResultResponse): 200 | 400 | 404 {
   if (!("error" in response)) return 200;
+  if (response.error.code === -32_601) return 404;
   return response.error.code === -32_020 ||
     response.error.code === -32_021 ||
     response.error.code === -32_022

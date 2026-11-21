@@ -291,7 +291,7 @@ test("overlaps calls, rejects duplicate active IDs, and isolates typed cancellat
     `${JSON.stringify({
       jsonrpc: "2.0",
       method: "notifications/cancelled",
-      params: { requestId: "one", reason: "missing metadata" },
+      params: { requestId: "one", _meta: null },
     })}\n`,
   );
   await tick();
@@ -300,13 +300,8 @@ test("overlaps calls, rejects duplicate active IDs, and isolates typed cancellat
     `${JSON.stringify({
       jsonrpc: "2.0",
       method: "notifications/cancelled",
-      params: { requestId: "one", _meta: null },
+      params: { requestId: "one", reason: "fixture cancel" },
     })}\n`,
-  );
-  await tick();
-  assert.equal(releases.has("slow"), true);
-  input.write(
-    `${JSON.stringify(notification("notifications/cancelled", { requestId: "one", reason: "fixture cancel" }))}\n`,
   );
   input.write(`${JSON.stringify(notification("notifications/cancelled", { requestId: "unknown" }))}\n`);
   input.end();

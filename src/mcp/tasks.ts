@@ -18,6 +18,7 @@ import { compileGuardPlan, invokeBound } from "../runtime/invoke.ts";
 import { markMcpHandlerStarted } from "./progress.ts";
 import {
   encodeMcpResult,
+  MCP_PROTOCOL_VERSION,
   type McpErrorResponse,
   type McpProtocolError,
   type McpRequest,
@@ -26,9 +27,37 @@ import {
   type McpServerInfo,
   mcpErrorResponse,
 } from "./protocol.ts";
+import {
+  isJsonValue,
+  isMcpTaskInputRequests,
+  isMcpTaskInputResponses,
+  isMcpTaskToolResult,
+  mcpTaskInputUsesSamplingTools,
+} from "./task-payloads.ts";
+import { type TaskSubscription, type TaskWatch, untilTaskAbort } from "./task-subscriptions.ts";
 
 /** Stable extension identifier used in MCP capability negotiation. */
 export const MCP_TASKS_EXTENSION = "io.modelcontextprotocol/tasks" as const;
+
+/** Limits held task subscriptions per app and concurrent watches per subscription. */
+const MAX_TASK_SUBSCRIPTIONS = 64;
+const MAX_WATCHED_TASKS = 32;
+
+/** Throws from a tool that cannot run without negotiated Tasks. */
+export class McpTasksRequiredError extends AppError {
+  /** Rejects the tool call before any background work starts. */
+  constructor() {
+    super("This tool requires MCP Tasks", { code: "MCP_TASKS_CAPABILITY_REQUIRED" });
+  }
+}
+
+/** Throws from a provider for a missing, expired, or inaccessible task. */
+export class McpTaskNotFoundError extends AppError {
+  /** Uses the same error for unknown and inaccessible IDs. */
+  constructor() {
+    super("Task not found", { code: "MCP_TASK_NOT_FOUND" });
+  }
+}
 
 /** Lifecycle state allowed by the 2026-07-28 Tasks extension. */
 export type McpTaskStatus = "working" | "input_required" | "completed" | "failed" | "cancelled";
@@ -109,7 +138,7 @@ export interface McpTaskBase {
   readonly createdAt: string;
   /** RFC 3339 last-update time supplied by the app provider. */
   readonly lastUpdatedAt: string;
-  /** Remaining lifetime in milliseconds, or `null` for unlimited. */
+  /** Time to live from creation in milliseconds, or `null` for unlimited. */
   readonly ttlMs: number | null;
   /** Optional suggested polling interval in milliseconds. */
   readonly pollIntervalMs?: number;
@@ -160,16 +189,19 @@ export type McpTask =
   | McpCancelledTask;
 
 /** App-owned task snapshot accepted by `mcp.tasks.reference`. */
-export type McpTaskReferenceInput = McpTask;
+export type McpTaskReferenceInput = McpTaskBase;
 
 /** Runtime-only brand placed on an app task returned from a tool handler. */
 const taskReference: unique symbol = Symbol("argsbarg.mcp-task-reference");
+
+/** Associates issued handles with the exact tool invocation that created them. */
+const referenceOwner = new WeakMap<McpTaskReference, McpTaskAccess>();
 
 /** Strict RFC 3339 parser used for app-owned task lifecycle timestamps. */
 const RFC3339_DATE_TIME = z.iso.datetime({ offset: true });
 
 /** App task snapshot marked for MCP `CreateTaskResult` encoding. */
-export type McpTaskReference = McpTask & {
+export type McpTaskReference = McpTaskBase & {
   /** Runtime-only marker proving the value came from `mcp.tasks.reference`. */
   readonly [taskReference]: true;
 };
@@ -196,12 +228,16 @@ export type McpToolInvocationContext<Input, Seed extends object> = InvocationCon
 
 /** Common inputs supplied to an app-owned task provider operation. */
 export interface McpTaskOperationContext<Seed extends object> {
-  /** Exact task ID supplied by the client. */
+  /** Provider-local task ID, after stripping any mount prefix. */
   readonly taskId: string;
   /** Fresh operation locals produced by MCP middleware and the MCP surface guard. */
   readonly locals: Seed;
   /** Exact signal for this follow-up request only. */
   readonly signal: AbortSignal;
+  /** Current request's protocol revision. */
+  readonly protocolVersion: typeof MCP_PROTOCOL_VERSION;
+  /** Immutable client capabilities for this request, not the creation request. */
+  readonly clientCapabilities: Readonly<Record<string, unknown>>;
 }
 
 /** Inputs supplied to an app-owned task input update. */
@@ -218,6 +254,11 @@ export interface McpTaskProvider<Seed extends object = Locals> {
   update(context: McpTaskUpdateContext<Seed>): MaybePromise<void>;
   /** Requests cooperative cancellation and returns once that request is accepted. */
   cancel(context: McpTaskOperationContext<Seed>): MaybePromise<void>;
+  /**
+   * Authorizes this caller before returning an abort-aware stream of committed snapshots.
+   * Throw McpTaskNotFoundError for inaccessible tasks. Aborting the signal stops observing, not the job.
+   */
+  watch?(context: McpTaskOperationContext<Seed>): MaybePromise<AsyncIterable<McpTask>>;
 }
 
 /** Result emitted by one task provider dispatch. */
@@ -231,7 +272,7 @@ export interface McpTaskDispatchResult {
 /** Runtime closure that accepts a task operation through one compiled D2 declaration. */
 export type McpTaskInvokeDecorator<Seed extends object> = (
   /** Exact task method selected by the dispatcher. */
-  method: "tasks/get" | "tasks/update" | "tasks/cancel",
+  method: TaskMethod | "subscriptions/listen",
   /** Raw request params supplied to the one D2 parse. */
   rawInputs: unknown,
   /** Request-owned source, signal, and mutable locals. */
@@ -246,6 +287,13 @@ export interface McpTaskRuntime {
   access(request: McpRequest, toolName: string): McpTaskAccess;
   /** True when the caller opted into the 2026 Tasks extension for this request. */
   supported(request: McpRequest): boolean;
+  /** Prepares guarded watches or returns a rejection before transport streaming starts. */
+  subscribe(
+    request: McpRequest,
+    taskIds: readonly string[],
+    base: InvocationBase<object>,
+    serverInfo: McpServerInfo,
+  ): Promise<{ readonly subscription: TaskSubscription } | { readonly response: McpErrorResponse }>;
   /** Dispatches one validated task method through caller guards and provider callbacks. */
   dispatch(
     request: McpRequest,
@@ -287,6 +335,8 @@ export function createMcpTaskRuntime<Seed extends object>(
   options: McpTaskRuntimeOptions<Seed>,
 ): McpTaskRuntime {
   const routes = createTaskRoutes(options);
+  let subscriptionCount = 0;
+  const canWatch = routes.some((route) => route.invocations.watch !== undefined);
   const runtime: McpTaskRuntime = {
     access: (request: McpRequest, toolName: string) =>
       createTaskAccess(
@@ -295,6 +345,81 @@ export function createMcpTaskRuntime<Seed extends object>(
         routes,
       ),
     supported: supportsTasks,
+    subscribe: async (request, taskIds, base, serverInfo) => {
+      const id = request.id;
+      if (id === undefined) throw new TypeError("MCP subscriptions require a request ID");
+      if (!canWatch) return { response: mcpErrorResponse(id, -32_601, "Method not found") };
+      if (taskIds.length > MAX_WATCHED_TASKS) {
+        return { response: mcpErrorResponse(id, -32_602, "Too many task IDs in subscription") };
+      }
+      if (subscriptionCount >= MAX_TASK_SUBSCRIPTIONS) {
+        return { response: mcpErrorResponse(id, -32_603, "Task subscription capacity reached") };
+      }
+      subscriptionCount++;
+      const controller = new AbortController();
+      const watches: TaskWatch[] = [];
+      const capabilities = immutableCapabilities(request.meta?.clientCapabilities ?? {});
+      /** Links transport cancellation to watch preparation and reads. */
+      const abort = (): void => controller.abort(base.signal.reason);
+      base.signal.addEventListener("abort", abort, { once: true });
+      if (base.signal.aborted) abort();
+      let disposed = false;
+      const subscription: TaskSubscription = {
+        id,
+        serverInfo,
+        watches,
+        controller,
+        dispose() {
+          if (disposed) return;
+          disposed = true;
+          controller.abort();
+          base.signal.removeEventListener("abort", abort);
+          subscriptionCount--;
+          for (const { iterator } of watches) {
+            void Promise.resolve().then(() => iterator.return?.()).catch(() => {
+              // The provider signal is already aborted; teardown cannot replace the wire outcome.
+            });
+          }
+        },
+      };
+      const deadline = setTimeout(() => controller.abort(), 15_000);
+      try {
+        for (const taskId of new Set(taskIds)) {
+          const selected = routeForTaskId(routes, taskId);
+          const watch = selected?.route.invocations.watch;
+          if (selected === undefined || watch === undefined || controller.signal.aborted) continue;
+          const fresh = { ...base, locals: { ...base.locals }, signal: controller.signal } as InvocationBase<Seed>;
+          const selectedBase = selected.route.route.prepareBase?.(fresh) ?? fresh;
+          const rawInputs = { taskId: selected.localTaskId };
+          /** Runs the watch setup through the same guard and hooks as polling. */
+          const invoke = () => watch(rawInputs, selectedBase, capabilities);
+          const decorate = selected.route.route.decorateInvoke;
+          const outcome = await untilTaskAbort(
+            decorate === undefined ? invoke() : decorate("subscriptions/listen", rawInputs, selectedBase, invoke),
+            controller.signal,
+          );
+          if (outcome === undefined || outcome.kind === "denied") continue;
+          if (outcome.kind === "error" && outcome.error instanceof McpTaskNotFoundError) continue;
+          if (outcome.kind !== "ok" || !isTaskIterable(outcome.result)) {
+            throw new TypeError("Task watch failed to open");
+          }
+          const iterator = outcome.result[Symbol.asyncIterator]();
+          if (typeof iterator?.next !== "function") throw new TypeError("Task watch returned an invalid iterator");
+          watches.push({
+            id: taskId,
+            iterator,
+            snapshot: (value) => taskSnapshotForWire(value, selected, capabilities),
+          });
+        }
+        if (controller.signal.aborted) throw new Error("Task watch preparation was cancelled");
+        return { subscription };
+      } catch {
+        subscription.dispose();
+        return { response: mcpErrorResponse(id, -32_603, "Task subscription could not be opened") };
+      } finally {
+        clearTimeout(deadline);
+      }
+    },
     dispatch: async (
       request: McpRequest,
       base: InvocationBase<object>,
@@ -307,13 +432,7 @@ export function createMcpTaskRuntime<Seed extends object>(
       if (request.id === undefined) throw new TypeError("MCP task operations require a request ID");
       if (!supportsTasks(request)) {
         return {
-          response: mcpErrorResponse(request.id, -32_021, "Missing required client capability", {
-            requiredCapabilities: {
-              extensions: {
-                [MCP_TASKS_EXTENSION]: {},
-              },
-            },
-          }),
+          response: missingMcpCapabilities(request.id),
           outcome: taskUnsupportedOutcome(),
         };
       }
@@ -330,15 +449,20 @@ export function createMcpTaskRuntime<Seed extends object>(
       const rawInputs = { ...params, taskId: selected.localTaskId };
       const selectedBase =
         selected.route.route.prepareBase?.(base as InvocationBase<Seed>) ?? (base as InvocationBase<Seed>);
+      const clientCapabilities = immutableCapabilities(request.meta?.clientCapabilities ?? {});
       const invoke = (): Promise<InvocationOutcome<unknown>> =>
-        invokeOperation(rawInputs, selectedBase);
-      const outcome =
-        selected.route.route.decorateInvoke === undefined
+        invokeOperation(rawInputs, selectedBase, clientCapabilities);
+      let outcome: InvocationOutcome<unknown>;
+      try {
+        outcome = selected.route.route.decorateInvoke === undefined
           ? await invoke()
           : await selected.route.route.decorateInvoke(request.method as TaskMethod, rawInputs, selectedBase, invoke);
+      } catch (error) {
+        outcome = { kind: "error", error, stdout: "", stderr: "" };
+      }
       return {
         outcome,
-        response: encodeTaskOutcome(request.id, operation, outcome, serverInfo, selected.route.prefix),
+        response: encodeTaskOutcome(request.id, operation, outcome, serverInfo, selected, clientCapabilities),
       };
     },
   };
@@ -442,13 +566,16 @@ export function encodeMcpTaskReference(
   id: McpRequestId,
   reference: McpTaskReference,
   serverInfo: McpServerInfo,
+  access: McpTaskAccess,
 ): McpResultResponse {
-  const task = validateMcpTask(reference);
+  if (!access.available || referenceOwner.get(reference) !== access) {
+    throw new TypeError("MCP task reference was not issued by this invocation");
+  }
   return {
     jsonrpc: "2.0",
     id,
     result: {
-      ...task,
+      ...reference,
       resultType: "task",
       _meta: {
         "io.modelcontextprotocol/serverInfo": { name: serverInfo.name, version: serverInfo.version },
@@ -466,74 +593,69 @@ type TaskOperation = "get" | "update" | "cancel";
 /** Compiled request invocations shared by all requests for one task provider. */
 type TaskInvocations<Seed extends object> = Record<
   TaskOperation,
-  (rawInputs: unknown, base: InvocationBase<Seed>) => Promise<InvocationOutcome<unknown>>
->;
+  (rawInputs: unknown, base: InvocationBase<Seed>, capabilities: Readonly<Record<string, unknown>>) =>
+    Promise<InvocationOutcome<unknown>>
+> & { readonly watch?: TaskInvocations<Seed>["get"] };
 
 /** Creates strict request schemas and one guarded D2 invocation per task operation. */
 function createTaskInvocations<Seed extends object>(
   provider: McpTaskProvider<Seed>,
   guard: Guard<unknown, Seed, object> | undefined,
 ): TaskInvocations<Seed> {
-  const get = z.strictObject({ taskId: z.string().min(1) });
-  const update = z.strictObject({
+  const get = z.object({ taskId: z.string().min(1) });
+  const update = z.object({
     taskId: z.string().min(1),
-    inputResponses: z.record(z.string(), z.unknown()).transform((value, context) => {
-      try {
-        return validateInputResponses(value);
-      } catch {
-        context.addIssue({ code: "custom", message: "Invalid MCP task input responses" });
-        return z.NEVER;
-      }
-    }),
+    inputResponses: z.custom<McpTaskInputResponses>(isMcpTaskInputResponses, "Invalid MCP task input responses"),
   });
-  const cancel = z.strictObject({ taskId: z.string().min(1) });
+  const cancel = get;
   return {
-    get: taskInvocation(get, guard, async ({ taskId, locals, signal }) => {
-      const task = validateMcpTask(await provider.get({ taskId, locals, signal }));
-      if (task.taskId !== taskId) {
-        throw new TypeError(
-          `MCP Tasks provider returned task ${JSON.stringify(task.taskId)} for ${JSON.stringify(taskId)}`,
-        );
-      }
-      return task;
-    }),
-    update: taskInvocation(update, guard, ({ taskId, inputResponses, locals, signal }) =>
-      provider.update({ taskId, inputResponses, locals, signal }),
-    ),
-    cancel: taskInvocation(cancel, guard, ({ taskId, locals, signal }) => provider.cancel({ taskId, locals, signal })),
+    get: taskInvocation(get, guard, (context) => provider.get(context)),
+    update: taskInvocation(update, guard, (context) => provider.update(context)),
+    cancel: taskInvocation(cancel, guard, (context) => provider.cancel(context)),
+    watch: provider.watch === undefined ? undefined : taskInvocation(get, guard, provider.watch.bind(provider)),
   };
+}
+
+/** Checks the eager provider watch result without advancing it before acknowledgment. */
+function isTaskIterable(value: unknown): value is AsyncIterable<McpTask> {
+  return typeof value === "object" && value !== null &&
+    Symbol.asyncIterator in value && typeof value[Symbol.asyncIterator] === "function";
 }
 
 /** Builds one strict task invocation whose handler receives provider-safe fields only. */
 function taskInvocation<
-  Schema extends z.ZodType<Record<string, unknown>>,
+  Schema extends z.ZodType<{ taskId: string }>,
   Seed extends object,
 >(
   inputSchema: Schema,
   guard: Guard<unknown, Seed, object> | undefined,
   provider: (
-    context: z.output<Schema> & {
-      /** Fresh request locals after the MCP surface guard. */
-      locals: Seed;
-      /** Exact follow-up request signal. */
-      signal: AbortSignal;
-    },
+    context: z.output<Schema> & McpTaskOperationContext<Seed>,
   ) => unknown | Promise<unknown>,
-): (rawInputs: unknown, base: InvocationBase<Seed>) => Promise<InvocationOutcome<unknown>> {
+): TaskInvocations<Seed>[TaskOperation] {
   const compile = compileGuardPlan<z.output<Schema>, Seed>();
-  const declaration = {
-    inputSchema,
-    guardPlan: compile({ surface: guard as Guard<z.output<Schema>, Seed, object> | undefined }),
-    handler: (context: InvocationContext<z.output<Schema>, Seed>) => {
-      markMcpHandlerStarted(context.locals);
-      return provider({ ...context.inputs, locals: context.locals, signal: context.signal });
-    },
-  } as BoundDeclaration<Schema, unknown, Seed>;
-  return (rawInputs, base) => invokeBound({ declaration, rawInputs, base });
+  const guardPlan = compile({ surface: guard as Guard<z.output<Schema>, Seed, object> | undefined });
+  return (rawInputs, base, clientCapabilities) => {
+    const declaration = {
+      inputSchema,
+      guardPlan,
+      handler: (context: InvocationContext<z.output<Schema>, Seed>) => {
+        markMcpHandlerStarted(context.locals);
+        return provider({
+          ...context.inputs,
+          locals: context.locals,
+          signal: context.signal,
+          protocolVersion: MCP_PROTOCOL_VERSION,
+          clientCapabilities,
+        });
+      },
+    } as BoundDeclaration<Schema, unknown, Seed>;
+    return invokeBound({ declaration, rawInputs, base, forbidChdir: true });
+  };
 }
 
 /** True for the official Tasks extension capability shape. */
-function supportsTasks(request: McpRequest): boolean {
+export function supportsTasks(request: McpRequest): boolean {
   const extensions = request.meta?.clientCapabilities.extensions;
   if (
     !(
@@ -548,17 +670,72 @@ function supportsTasks(request: McpRequest): boolean {
   return typeof declared === "object" && declared !== null && !Array.isArray(declared) && Object.keys(declared).length === 0;
 }
 
+/** Encodes the current request's missing capability set. */
+export function missingMcpCapabilities(
+  id: McpRequestId,
+  requiredCapabilities: Readonly<Record<string, unknown>> = { extensions: { [MCP_TASKS_EXTENSION]: {} } },
+): McpErrorResponse {
+  return mcpErrorResponse(id, -32_021, "Missing required client capability", { requiredCapabilities });
+}
+
+/** Copies and freezes JSON capabilities without exposing the decoded envelope to providers. */
+function immutableCapabilities(value: Readonly<Record<string, unknown>>): Readonly<Record<string, unknown>> {
+  return Object.freeze(Object.fromEntries(Object.entries(value).map(([key, item]) => [key, freezeCapability(item)])));
+}
+
+/** Freezes one nested value in a request's JSON capability map. */
+function freezeCapability(value: unknown): unknown {
+  if (Array.isArray(value)) return Object.freeze(value.map(freezeCapability));
+  if (isRecord(value)) return immutableCapabilities(value);
+  return value;
+}
+
+/** Finds capabilities missing for the pending input variants in this task. */
+function missingInputCapabilities(
+  requests: McpTaskInputRequests,
+  capabilities: Readonly<Record<string, unknown>>,
+): Readonly<Record<string, unknown>> {
+  const required: Record<string, unknown> = {};
+  const elicitation: Record<string, object> = {};
+  const sampling: Record<string, object> = {};
+  for (const request of Object.values(requests)) {
+    if (request.method === "roots/list" && !isRecord(capabilities.roots)) required.roots = {};
+    if (request.method === "elicitation/create") {
+      const mode = request.params.mode === "url" ? "url" : "form";
+      const declared = capabilities.elicitation;
+      const implicitForm = mode === "form" && isRecord(declared) &&
+        declared.form === undefined && declared.url === undefined;
+      if (!implicitForm && !(isRecord(declared) && isRecord(declared[mode]))) elicitation[mode] = {};
+    }
+    if (request.method === "sampling/createMessage") {
+      const declared = capabilities.sampling;
+      if (!isRecord(declared)) required.sampling = sampling;
+      if (request.params.includeContext !== undefined && request.params.includeContext !== "none" &&
+        !(isRecord(declared) && isRecord(declared.context))) {
+        sampling.context = {};
+        required.sampling = sampling;
+      }
+      if (mcpTaskInputUsesSamplingTools(request) && !(isRecord(declared) && isRecord(declared.tools))) {
+        sampling.tools = {};
+        required.sampling = sampling;
+      }
+    }
+  }
+  if (Object.keys(elicitation).length !== 0) required.elicitation = elicitation;
+  return required;
+}
+
 /** Creates immutable, validated task helpers for one tool call. */
 function createTaskAccess<Seed extends object>(
   available: boolean,
   route: CompiledTaskRoute<Seed> | undefined,
   routes: readonly CompiledTaskRoute<Seed>[],
 ): McpTaskAccess {
-  return Object.freeze({
+  const access: McpTaskAccess = Object.freeze({
     available,
     reference: (task: McpTaskReferenceInput): McpTaskReference => {
-      if (!available) throw new TypeError("MCP Tasks is unavailable for this client request");
-      const validated = validateMcpTask(task);
+      if (!available) throw new McpTasksRequiredError();
+      const validated = validateTaskBase(task);
       const taskId = `${route?.prefix ?? ""}${validated.taskId}`;
       const selected = routeForTaskId(routes, taskId);
       if (
@@ -570,13 +747,16 @@ function createTaskAccess<Seed extends object>(
           `MCP task ID ${JSON.stringify(validated.taskId)} collides with a mounted child provider namespace`,
         );
       }
-      return Object.freeze({
+      const reference = Object.freeze({
         ...validated,
         taskId,
         [taskReference]: true as const,
-      }) as McpTaskReference;
+      });
+      referenceOwner.set(reference, access);
+      return reference;
     },
   });
+  return access;
 }
 
 /** Converts one task method string into its runtime operation. */
@@ -588,43 +768,66 @@ function taskOperation(method: string): TaskOperation | undefined {
 }
 
 /** Encodes one task provider outcome as the protocol-specific response. */
-function encodeTaskOutcome(
+function encodeTaskOutcome<Seed extends object>(
   id: McpRequestId,
   operation: TaskOperation,
   outcome: InvocationOutcome<unknown>,
   serverInfo: McpServerInfo,
-  prefix: string,
+  selected: SelectedTaskRoute<Seed>,
+  capabilities: Readonly<Record<string, unknown>>,
 ): McpErrorResponse | McpResultResponse {
   if (outcome.kind === "ok") {
     if (operation === "get") {
-      return encodeMcpResult(
-        id,
-        prefixTask(validateMcpTask(outcome.result), prefix) as unknown as Readonly<Record<string, unknown>>,
-        serverInfo,
-      );
+      try {
+        return encodeMcpResult(id, { ...taskSnapshotForWire(outcome.result, selected, capabilities) }, serverInfo);
+      } catch (error) {
+        return error instanceof TaskInputCapabilityError
+          ? missingMcpCapabilities(id, error.required)
+          : mcpErrorResponse(id, -32_603, "Task provider returned an invalid snapshot");
+      }
     }
 
-    /** Adds the selected provider's public namespace to one task snapshot. */
-    function prefixTask(task: McpTask, prefix: string): McpTask {
-      return prefix.length === 0 ? task : ({ ...task, taskId: `${prefix}${task.taskId}` } as McpTask);
-    }
     return encodeMcpResult(id, {}, serverInfo);
   }
   if (outcome.kind === "invalid") return mcpErrorResponse(id, -32_602, "Invalid task operation params");
   if (outcome.kind === "denied") {
     return mcpErrorResponse(id, -32_003, outcome.denial.message, { code: outcome.denial.code });
   }
-  if (outcome.error instanceof AppError) {
-    return mcpErrorResponse(id, -32_000, outcome.error.message, {
-      code: outcome.error.code,
-      ...(outcome.error.details === undefined ? {} : { details: outcome.error.details }),
-    });
+  if (outcome.error instanceof McpTaskNotFoundError) {
+    return mcpErrorResponse(id, -32_602, "Task not found");
   }
   return mcpErrorResponse(id, -32_603, "Task operation failed");
 }
 
-/** Validates and copies one provider-owned task snapshot for wire use. */
-function validateMcpTask(value: unknown): McpTask {
+/** Carries the exact missing capability details for a polling response. */
+class TaskInputCapabilityError extends Error {
+  /** Capabilities required by the pending task input requests. */
+  readonly required: Readonly<Record<string, unknown>>;
+
+  /** Records missing input capabilities without exposing the pending input itself. */
+  constructor(required: Readonly<Record<string, unknown>>) {
+    super("Client is missing capabilities required by the task snapshot");
+    this.required = required;
+  }
+}
+
+/** Gives polling and subscriptions the same snapshot validation and public task identity. */
+function taskSnapshotForWire<Seed extends object>(
+  value: unknown,
+  selected: SelectedTaskRoute<Seed>,
+  capabilities: Readonly<Record<string, unknown>>,
+): McpTask {
+  const task = validateMcpTask(value);
+  if (task.taskId !== selected.localTaskId) throw new TypeError("Task provider returned an invalid snapshot");
+  if (task.status === "input_required") {
+    const missing = missingInputCapabilities(task.inputRequests, capabilities);
+    if (Object.keys(missing).length !== 0) throw new TaskInputCapabilityError(missing);
+  }
+  return { ...task, taskId: `${selected.route.prefix}${task.taskId}` };
+}
+
+/** Validates and copies only the fields allowed on a creation handle. */
+function validateTaskBase(value: unknown): McpTaskBase {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     throw new TypeError("Task provider returned an invalid task");
   }
@@ -639,14 +842,15 @@ function validateMcpTask(value: unknown): McpTask {
     typeof taskId !== "string" ||
     taskId.length === 0 ||
     !isTaskStatus(status) ||
-    !RFC3339_DATE_TIME.safeParse(createdAt).success ||
-    !RFC3339_DATE_TIME.safeParse(lastUpdatedAt).success ||
+    typeof createdAt !== "string" || !RFC3339_DATE_TIME.safeParse(createdAt).success ||
+    typeof lastUpdatedAt !== "string" || !RFC3339_DATE_TIME.safeParse(lastUpdatedAt).success ||
+    (record.statusMessage !== undefined && typeof record.statusMessage !== "string") ||
     !validDuration(ttlMs, true) ||
     (pollIntervalMs !== undefined && !validDuration(pollIntervalMs, false))
   ) {
     throw new TypeError("Task provider returned an invalid task");
   }
-  const common = {
+  return {
     taskId,
     status,
     createdAt,
@@ -655,118 +859,25 @@ function validateMcpTask(value: unknown): McpTask {
     ...(typeof record.statusMessage === "string" ? { statusMessage: record.statusMessage } : {}),
     ...(pollIntervalMs === undefined ? {} : { pollIntervalMs: pollIntervalMs as number }),
   };
-  if (status === "working" || status === "cancelled") return validateJsonValue(common as McpTask);
-  if (status === "input_required") {
-    const inputRequests = validateInputRequests(record.inputRequests);
-    return validateJsonValue({ ...common, status, inputRequests } as McpTask);
-  }
-  if (status === "completed") {
-    const result = validateToolTaskResult(record.result);
-    return validateJsonValue({ ...common, status, result } as McpTask);
-  }
-  if (!isProtocolError(record.error)) throw new TypeError("Failed task needs a JSON-RPC error");
-  return validateJsonValue({ ...common, status, error: record.error } as McpTask);
 }
 
-/** Validates one provider-owned map of MCP input requests. */
-function validateInputRequests(value: unknown): McpTaskInputRequests {
-  if (!isRecord(value)) throw new TypeError("Input-required task needs inputRequests");
-  const entries = Object.entries(value).map(([key, request]) => {
-    if (
-      !isRecord(request) ||
-      ((request.method === "elicitation/create" || request.method === "sampling/createMessage")
-        ? !isRecord(request.params)
-        : request.method !== "roots/list" ||
-          (request.params !== undefined && !isRecord(request.params)))
-    ) {
-      throw new TypeError(`Invalid MCP task input request ${JSON.stringify(key)}`);
-    }
-    return [
-      key,
-      request as unknown as McpTaskInputRequest,
-    ] as const;
-  });
-  return Object.fromEntries(entries);
-}
-
-/** Validates one client-provided map of MCP task input responses. */
-function validateInputResponses(value: unknown): McpTaskInputResponses {
-  if (!isRecord(value)) throw new TypeError("Task inputResponses must be an object");
-  const entries = Object.entries(value).map(([key, response]) => {
-    if (!isRecord(response)) throw new TypeError(`Invalid MCP task input response ${JSON.stringify(key)}`);
-    const elicitation =
-      (response.action === "accept" || response.action === "decline" || response.action === "cancel") &&
-      (response.content === undefined || isRecord(response.content));
-    const sampling =
-      (response.role === "user" || response.role === "assistant") &&
-      typeof response.model === "string" &&
-      (isMcpContentBlock(response.content) ||
-        (Array.isArray(response.content) &&
-          response.content.every(isMcpContentBlock))) &&
-      (response.stopReason === undefined || typeof response.stopReason === "string");
-    const roots =
-      Array.isArray(response.roots) &&
-      response.roots.every(
-        (root) =>
-          isRecord(root) &&
-          typeof root.uri === "string" &&
-          (root.name === undefined || typeof root.name === "string"),
-      );
-    if (!elicitation && !sampling && !roots) {
-      throw new TypeError(`Invalid MCP task input response ${JSON.stringify(key)}`);
-    }
-    return [key, response as unknown as McpTaskInputResponse] as const;
-  });
-  return Object.fromEntries(entries);
-}
-
-/** Validates one completed task's original MCP tools/call result. */
-function validateToolTaskResult(value: unknown): McpTaskToolResult {
-  if (
-    !isRecord(value) ||
-    value.resultType !== "complete" ||
-    !Array.isArray(value.content) ||
-    !value.content.every(isMcpContentBlock) ||
-    (value.isError !== undefined && typeof value.isError !== "boolean") ||
-    (value._meta !== undefined && !isRecord(value._meta))
-  ) {
-    throw new TypeError("Completed task needs a valid MCP CallToolResult");
+/** Validates and copies one detailed provider snapshot for polling. */
+function validateMcpTask(value: unknown): McpTask {
+  if (!isRecord(value)) throw new TypeError("Task provider returned an invalid task");
+  const common = validateTaskBase(value);
+  const { status } = common;
+  const record = value;
+  if (status === "working" || status === "cancelled") return { ...common, status };
+  if (status === "input_required" && isMcpTaskInputRequests(record.inputRequests)) {
+    return { ...common, status, inputRequests: record.inputRequests };
   }
-  const result = value as unknown as McpTaskToolResult;
-  validateJsonValue(result);
-  return result;
-}
-
-/** Checks one native MCP content block used in a completed task result. */
-function isMcpContentBlock(value: unknown): boolean {
-  if (!isRecord(value) || (value._meta !== undefined && !isRecord(value._meta))) return false;
-  switch (value.type) {
-    case "text":
-      return typeof value.text === "string";
-    case "image":
-    case "audio":
-      return typeof value.data === "string" && typeof value.mimeType === "string";
-    case "resource_link":
-      return (
-        typeof value.uri === "string" &&
-        typeof value.name === "string" &&
-        (value.description === undefined || typeof value.description === "string") &&
-        (value.mimeType === undefined || typeof value.mimeType === "string") &&
-        (value.size === undefined ||
-          (typeof value.size === "number" && Number.isSafeInteger(value.size) && value.size >= 0))
-      );
-    case "resource": {
-      const resource = value.resource;
-      return (
-        isRecord(resource) &&
-        typeof resource.uri === "string" &&
-        (typeof resource.text === "string" || typeof resource.blob === "string") &&
-        (resource.mimeType === undefined || typeof resource.mimeType === "string")
-      );
-    }
-    default:
-      return false;
+  if (status === "completed" && isMcpTaskToolResult(record.result)) {
+    return { ...common, status, result: record.result };
   }
+  if (status === "failed" && isProtocolError(record.error)) {
+    return { ...common, status, error: record.error };
+  }
+  throw new TypeError("Task provider returned an invalid status payload");
 }
 
 /** Returns true only for the exact 2026 task lifecycle set. */
@@ -793,19 +904,8 @@ function isProtocolError(value: unknown): value is McpProtocolError {
     typeof value.code === "number" &&
     Number.isSafeInteger(value.code) &&
     typeof value.message === "string" &&
-    (value.data === undefined || value.data !== undefined)
+    isJsonValue(value)
   );
-}
-
-/** Rejects task payloads that cannot cross the MCP JSON wire. */
-function validateJsonValue<T extends object>(task: T): T {
-  try {
-    JSON.stringify(task);
-  } catch {
-    throw new TypeError("Task provider returned a non-JSON task value");
-  }
-
-  return task;
 }
 
 /** Creates a synthetic error outcome for requests rejected before provider invocation. */

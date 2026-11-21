@@ -276,10 +276,11 @@ test("relay sends one exact-URL MCP request with only explicit and framework-own
   assert.equal(capturedInit?.signal, controller.signal);
   assert.equal(capturedInit?.redirect, "manual");
   assert.deepEqual(Object.fromEntries(new Headers(capturedInit?.headers)), {
-    accept: "application/json",
+    accept: "application/json, text/event-stream",
     "content-type": "application/json",
     "mcp-method": "tools/call",
     "mcp-name": "echo",
+    "mcp-protocol-version": "2026-07-28",
     "x-token": "explicit",
   });
   assert.deepEqual(JSON.parse(String(capturedInit?.body)), {

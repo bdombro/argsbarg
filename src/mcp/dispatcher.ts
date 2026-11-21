@@ -17,10 +17,14 @@ import {
   mcpErrorResponse,
 } from "./protocol.ts";
 import type { McpRegisteredTool, McpRegistry } from "./registry.ts";
+import type { TaskSubscription } from "./task-subscriptions.ts";
 import {
   encodeMcpTaskReference,
+  McpTasksRequiredError,
   isMcpTaskReference,
   MCP_TASKS_EXTENSION,
+  missingMcpCapabilities,
+  supportsTasks,
   type McpTaskAccess,
   type McpTaskRuntime,
   unavailableMcpTaskAccess,
@@ -43,6 +47,8 @@ export interface McpDispatchRequest<Seed extends object> {
   readonly instructions?: string;
   /** Optional configured app-owned Tasks provider runtime. */
   readonly tasks?: McpTaskRuntime;
+  /** Adapter will consume any prepared streaming subscription. */
+  readonly streamSubscriptions?: boolean;
 }
 
 /** Transport-neutral response emitted for a request, or `undefined` for a notification. */
@@ -71,7 +77,25 @@ export async function dispatchMcpRequestDetailed<Seed extends object>(
       }),
     };
   }
-  if ("cursor" in request.params) {
+  if (request.method === "subscriptions/listen") {
+    const filter = request.params.notifications;
+    if (!isRecord(filter)) {
+      return { response: mcpErrorResponse(request.id, -32_602, "Invalid subscription filter") };
+    }
+    if (Object.hasOwn(filter, "taskIds")) {
+      if (!supportsTasks(request)) return { response: missingMcpCapabilities(request.id) };
+      const { taskIds } = filter;
+      if (!Array.isArray(taskIds) || !taskIds.every((id) => typeof id === "string" && id.length > 0)) {
+        return { response: mcpErrorResponse(request.id, -32_602, "Invalid task IDs") };
+      }
+      if (dispatch.streamSubscriptions && dispatch.tasks !== undefined) {
+        const prepared = await dispatch.tasks.subscribe(request, taskIds, dispatch.base, dispatch.serverInfo);
+        return "response" in prepared ? prepared : { response: undefined, subscription: prepared.subscription };
+      }
+    }
+    return { response: mcpErrorResponse(request.id, -32_601, "Method not found") };
+  }
+  if (request.method === "tools/list" && "cursor" in request.params) {
     return {
       response: mcpErrorResponse(request.id, -32_602, "Invalid params: pagination cursors are not issued by this server"),
     };
@@ -141,6 +165,7 @@ export async function dispatchMcpRequestDetailed<Seed extends object>(
     dispatch.base,
     dispatch.serverInfo,
     dispatch.tasks?.access(request, entry.name),
+    !supportsTasks(request),
   );
   return {
     response: call.response,
@@ -154,6 +179,8 @@ export interface McpDispatchResult {
   readonly response: McpDispatchResponse;
   /** Exact D2 outcome when argument unwrapping reached registered invocation. */
   readonly outcome?: InvocationOutcome<unknown>;
+  /** Prepared task stream; the adapter owns delivery and disposal. */
+  readonly subscription?: TaskSubscription;
 }
 
 /** Unique marker returned when a declared wire wrapper is malformed. */
@@ -185,6 +212,8 @@ export async function invokeMcpRegisteredTool<Seed extends object>(
   serverInfo: McpServerInfo,
   /** Capability-aware MCP Tasks helper exposed to the tool handler. */
   tasks: McpTaskAccess = unavailableMcpTaskAccess(),
+  /** Whether the wire caller omitted a valid Tasks capability. */
+  missingTasksCapability = false,
 ): Promise<McpRegisteredToolCall> {
   const rawInputs = unwrapInputs(entry, argumentsValue);
   if (rawInputs === invalidInputs) {
@@ -196,7 +225,7 @@ export async function invokeMcpRegisteredTool<Seed extends object>(
   }
   const outcome = await entry.invoke(rawInputs, base, tasks);
   return {
-    response: encodeCallOutcome(id, entry, outcome, serverInfo),
+    response: encodeCallOutcome(id, entry, outcome, serverInfo, tasks, missingTasksCapability),
     outcome,
     stdout: outcome.stdout,
     stderr: outcome.stderr,
@@ -220,12 +249,17 @@ function encodeCallOutcome(
   entry: McpRegisteredTool,
   outcome: InvocationOutcome<unknown>,
   serverInfo: McpServerInfo,
-): McpResultResponse {
+  tasks: McpTaskAccess,
+  missingTasksCapability: boolean,
+): McpResultResponse | McpErrorResponse {
+  if (outcome.kind === "error" && outcome.error instanceof McpTasksRequiredError && missingTasksCapability) {
+    return missingMcpCapabilities(id);
+  }
   if (outcome.kind !== "ok") return encodeFailure(id, outcome, serverInfo);
 
   try {
     if (isMcpTaskReference(outcome.result)) {
-      return encodeMcpTaskReference(id, outcome.result, serverInfo);
+      return encodeMcpTaskReference(id, outcome.result, serverInfo, tasks);
     }
     const structuredValue = entry.outputWrapped ? { result: outcome.result } : outcome.result;
     const text = formatContentText(structuredValue);
