@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [9.3.0] - 2026-11-21
+
+- **New:** configure the shared REST, JSON-RPC, and MCP HTTP listener with `server.listeners` for TCP, a private Unix socket, or both. Default TCP and existing `http.host`/`http.port` settings are unchanged when `server.listeners` is omitted.
+- **Fix:** `mcp call --relay` reads the terminal `tools/call` reply from JSON or SSE without making additional requests.
+- **Docs:** describe the shipped MCP Tasks polling and push APIs in the use-case index.
+
 ## [9.2.0] - 2026-11-21
 
 - **New:** MCP Tasks providers can supply `watch` to push committed task snapshots over HTTP SSE and stdio. Subscriptions authorize task IDs before acknowledgment and stop observing on disconnect without cancelling app-owned work.
@@ -1304,7 +1310,8 @@ const cli = { ... } satisfies CliProgram;  // or : CliProgram
 - Migrate schemas: rename every `children` property to **`commands`**; move positional definitions to **`CliPositional`** objects on `positionals` and strip `positional` / `argMin` / `argMax` from flag definitions under `options` (flags only carry `name`, `description`, `kind`, and optional `shortName`).
 - Imports: use `CliPositional` where needed; replace `CliOptionDef` with `CliOption` or `CliPositional` as appropriate.
 
-[Unreleased]: https://github.com/bdombro/argsbarg/compare/v9.2.0...HEAD
+[Unreleased]: https://github.com/bdombro/argsbarg/compare/v9.3.0...HEAD
+[9.3.0]: https://github.com/bdombro/argsbarg/releases/tag/v9.3.0
 [9.2.0]: https://github.com/bdombro/argsbarg/releases/tag/v9.2.0
 [9.1.0]: https://github.com/bdombro/argsbarg/releases/tag/v9.1.0
 [9.0.2]: https://github.com/bdombro/argsbarg/releases/tag/v9.0.2

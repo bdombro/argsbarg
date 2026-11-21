@@ -6,7 +6,7 @@ disconnect cancellation, bind rollback, Unix identity cleanup, and bounded lifec
 import assert from "node:assert/strict";
 import { unlinkSync, writeFileSync } from "node:fs";
 import { lstat, mkdtemp, readFile, rename, rm, unlink, writeFile } from "node:fs/promises";
-import { ServerResponse as NodeServerResponse } from "node:http";
+import { get as httpGet, ServerResponse as NodeServerResponse } from "node:http";
 import { createConnection, Server as NodeServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -447,6 +447,36 @@ describe("listener Web and Node streaming bridge", () => {
 });
 
 describe("listener bind and lifecycle", () => {
+  test("serves the same dispatcher over TCP and a Unix socket", { skip: process.platform === "win32" }, async () => {
+    const directory = await mkdtemp("/tmp/argsbarg-");
+    const path = join(directory, "dual.sock");
+    try {
+      const handle = await startMount(exactMount("/report", () => new Response("report")), [
+        LOOPBACK,
+        { kind: "unix", path },
+      ]);
+      try {
+        assert.equal(await (await fetch(`${firstTcp(handle).url}/report`)).text(), "report");
+        const unix = await new Promise<string>((resolve, reject) => {
+          httpGet({ socketPath: path, path: "/report", signal: AbortSignal.timeout(1000) }, async (response) => {
+            try {
+              let body = "";
+              for await (const chunk of response.setEncoding("utf8")) body += chunk;
+              resolve(body);
+            } catch (error) {
+              reject(error);
+            }
+          }).on("error", reject);
+        });
+        assert.equal(unix, "report");
+      } finally {
+        await handle.stop();
+      }
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
   test("serially rolls back partial Unix binds and preserves a pre-existing path", async () => {
     const directory = await mkdtemp(join(tmpdir(), "argsbarg-listener-"));
     const first = join(directory, "first.sock");

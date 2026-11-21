@@ -28,7 +28,7 @@ Discovery and dispatch share immutable startup catalogs. REST uses `/api`, JSON-
 
 ## Selected service transport
 
-One shared listener owns HTTP mounts. `serve mcp --stdio` uses MCP stdio and opens no listener. Combined MCP transport launches fail before bind.
+One shared listener owns HTTP mounts across the configured TCP and Unix socket endpoints. `serve mcp --stdio` uses MCP stdio and opens no listener. Combined MCP transport launches fail before bind.
 
 ## Build-time keyed child composition
 
@@ -44,4 +44,4 @@ The major removes `CommandContext`, `ctx.respond`, raw argv converters, auto-der
 
 ## Packaging
 
-One package and one app executable carry every enabled surface. Plugin and bundle manifests launch that executable in selected stdio mode. Zod remains the only peer dependency.
+One package and one app executable carry every enabled surface. Plugin and bundle manifests launch that executable in selected stdio mode. Zod remains the only peer dependency. The runtime keeps `yaml` for REST and CLI document support; it does not claim zero production dependencies.

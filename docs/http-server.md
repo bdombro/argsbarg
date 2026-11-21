@@ -32,6 +32,35 @@ All REST operations are mounted under `/api`:
 
 Launch with `myapp serve http` to start only REST. Bare `myapp serve` starts every configured REST, JSON-RPC, and MCP HTTP mount; `myapp serve http rpc` selects only the named HTTP mounts. Add `--host` or `--port` as needed.
 
+### Listener settings
+
+Without `server.listeners`, the shared listener keeps the existing TCP defaults
+(`127.0.0.1:3000`) and honors `http.host` and `http.port`. Set `server.listeners`
+to choose endpoints explicitly:
+
+```typescript
+server: {
+  listeners: {
+    tcp: { port: 8080 },
+    socket: { path: "/var/run/myapp/http.sock" },
+  },
+},
+```
+
+Either key may be omitted, but at least one is required. `{ tcp: {} }` uses the
+TCP defaults. Legacy `http.host` and `http.port` do not apply to an explicit set;
+`--host` and `--port` override only an enabled TCP endpoint. You can also supply
+a synchronous `listeners` callback to parse app-owned environment settings only
+when serving HTTP. CLI commands, local mirrors, and MCP stdio do not call it.
+
+On Unix, create the socket's parent directory yourself. Use a real directory
+owned by the serving user with mode `0700`, under trusted ancestors. Argsbarg
+refuses an existing socket path and does not replace it. The selected mounts are
+the same at every endpoint; file permissions do not replace app guards. If any
+bind fails, the listener releases earlier binds.
+
+### Browser origins
+
 If a request sends `Origin`, add the browser application's exact HTTP(S) origin
 (scheme, host, and port if non-default; no trailing slash) to
 `http.allowedOrigins`, for example `["https://app.example.com"]`. The default

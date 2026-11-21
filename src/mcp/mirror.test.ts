@@ -228,6 +228,78 @@ test("local MCP call derives credentials from env and retains the same native de
   });
 });
 
+test("relay reads the terminal SSE response and cancels the still-open body", { timeout: 2000 }, async () => {
+  const entries = createMcpCliCalls({ registry: createMcpRegistry([]), serverInfo: SERVER_INFO });
+  const result = {
+    resultType: "complete",
+    isError: false,
+    content: [{ type: "text", text: "café" }],
+    _meta: { "io.modelcontextprotocol/serverInfo": SERVER_INFO },
+  };
+  const bytes = new TextEncoder().encode(
+    "\uFEFF: comment\r\n\r\n" +
+      'data: {"jsonrpc":"2.0","method":"notifications/progress"}\r\n\r\n' +
+      `event: message\r\ndata: {"jsonrpc":"2.0","id":1,\r\ndata: "result":${JSON.stringify(result)}}\r\n\r\n`,
+  );
+  let cancelled = false;
+  let requests = 0;
+  const reply = await entries.relay.invoke(
+    { name: "echo", arguments: {} },
+    {
+      mode: "relay",
+      url: new URL("https://relay.example.test/mcp"),
+      headers: [],
+      signal: AbortSignal.timeout(1000),
+      fetch: async () => {
+        requests += 1;
+        return new Response(new ReadableStream({
+          start(controller) {
+            for (const byte of bytes) controller.enqueue(Uint8Array.of(byte));
+          },
+          cancel() {
+            cancelled = true;
+          },
+        }), { headers: { "content-type": "text/event-stream; charset=utf-8" } });
+      },
+    },
+  );
+  assert.deepEqual(reply, { kind: "native", value: { jsonrpc: "2.0", id: 1, result }, stdout: "", stderr: "" });
+  assert.equal(requests, 1);
+  assert.equal(cancelled, true);
+});
+
+test("relay rejects invalid or missing SSE terminal responses and cancels a pending read on abort", async () => {
+  const entries = createMcpCliCalls({ registry: createMcpRegistry([]), serverInfo: SERVER_INFO });
+  const invoke = (body: BodyInit, signal = new AbortController().signal) =>
+    entries.relay.invoke({ name: "echo", arguments: {} }, {
+      mode: "relay",
+      url: new URL("https://relay.example.test/mcp"),
+      headers: [],
+      signal,
+      fetch: async () => new Response(body, { headers: { "content-type": "text/event-stream" } }),
+    });
+  const terminal = (id: number) => `data: ${JSON.stringify({ jsonrpc: "2.0", id, error: { code: -32603, message: "Failed" } })}`;
+  const nativeError = await invoke(`${terminal(1)}\n\n`);
+  assert.equal(nativeError.kind === "native" && "error" in nativeError.value && nativeError.value.error.code, -32603);
+  for (const body of ["data: broken\n\n", `${terminal(2)}\n\n`, `${terminal(1)}\n`]) {
+    const reply = await invoke(body);
+    assert.equal(reply.kind === "failure" && reply.code, "INVALID_MCP_RESPONSE");
+  }
+  const controller = new AbortController();
+  let cancelled = false;
+  const body = new ReadableStream<Uint8Array>({
+    pull() {
+      controller.abort();
+    },
+    cancel() {
+      cancelled = true;
+    },
+  }, { highWaterMark: 0 });
+  const reply = await invoke(body, controller.signal);
+  assert.equal(reply.kind === "failure" && reply.code, "CALL_ABORTED");
+  assert.equal(cancelled, true);
+});
+
 test("relay sends one exact-URL MCP request with only explicit and framework-owned headers", async () => {
   const localCalls: string[] = [];
   const entries = createMcpCliCalls({

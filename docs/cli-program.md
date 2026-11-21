@@ -92,6 +92,8 @@ myapp serve mcp --stdio      # one selected MCP stdio process
 
 Bare `serve` starts all configured REST, RPC, and MCP HTTP mounts on the shared listener. Names select only the corresponding mounts; `serve http`, for example, starts REST without RPC or MCP HTTP. MCP stdio opens no listener. A combined stdio launch is rejected before I/O.
 
+Use [`server.listeners`](http-server.md#listener-settings) for TCP, Unix sockets, or both.
+
 ## Local mirrors and relays
 
 Generated calls are available only for configured surfaces:

@@ -6,7 +6,7 @@ and owns transport-local streaming, rollback, draining, force, and socket cleanu
 import { randomUUID } from "node:crypto";
 import { lstat, rename, unlink } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { normalize as normalizePath } from "node:path";
+import { dirname, normalize as normalizePath } from "node:path";
 import type { Readable } from "node:stream";
 import { Readable as NodeReadable } from "node:stream";
 
@@ -275,7 +275,7 @@ function compileMounts(mounts: readonly HttpMount[]): {
 /** Validates and freezes one normalized listener target. */
 function normalizeTarget(target: HttpListenTarget): HttpListenTarget {
   if (target.kind === "tcp") {
-    if (target.host.length === 0 || target.host.trim() !== target.host || target.host.includes("\0")) {
+    if (typeof target.host !== "string" || target.host.length === 0 || target.host.trim() !== target.host || target.host.includes("\0")) {
       throw new TypeError("TCP listen host must be non-empty normalized text");
     }
     if (!Number.isInteger(target.port) || target.port < 0 || target.port > 65_535) {
@@ -289,7 +289,10 @@ function normalizeTarget(target: HttpListenTarget): HttpListenTarget {
   if (!target.path.startsWith("/") || target.path.includes("\0") || normalizePath(target.path) !== target.path) {
     throw new TypeError(`Unix listen path must be absolute and normalized: ${JSON.stringify(target.path)}`);
   }
-  if (target.path === "/") throw new TypeError("Unix listen path must name a socket file");
+  if (target.path.endsWith("/")) throw new TypeError("Unix listen path must name a socket file");
+  if (Buffer.byteLength(target.path) > (process.platform === "linux" ? 107 : 103)) {
+    throw new TypeError("Unix listen path is too long");
+  }
   return Object.freeze({ kind: "unix", path: target.path });
 }
 
@@ -673,6 +676,18 @@ async function rollbackEndpoints(endpoints: readonly ListenerEndpoint[]): Promis
 
 /** Binds one endpoint and records Node's actual address plus Unix ownership evidence. */
 async function bindEndpoint(endpoint: ListenerEndpoint): Promise<void> {
+  if (endpoint.target.kind === "unix") {
+    const directory = dirname(endpoint.target.path);
+    const stat = await lstat(directory);
+    if (!stat.isDirectory() || stat.uid !== process.geteuid?.() || (stat.mode & 0o077) !== 0) {
+      throw new Error(`Unix socket directory must be owned by the process user and private (e.g. mode 0700): ${directory}`);
+    }
+    // Node manages the socket path on close; never hand it a name already in use.
+    const existing = await lstat(endpoint.target.path).catch((error: NodeJS.ErrnoException) => {
+      if (error.code !== "ENOENT") throw error;
+    });
+    if (existing !== undefined) throw new Error(`Unix socket path already exists: ${endpoint.target.path}`);
+  }
   await new Promise<void>((resolve, reject) => {
     const onError = (error: Error): void => {
       endpoint.server.off("listening", onListening);

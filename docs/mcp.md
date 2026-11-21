@@ -177,7 +177,7 @@ printf '%s\n' '{"name":"Ada"}' | myapp mcp call greet
 printf '%s\n' '{"name":"Ada"}' | myapp mcp call greet --relay https://service.example/mcp
 ```
 
-The relay performs exactly one `tools/call` request with protocol metadata and framework-owned routing headers. It reads a JSON reply; it does not consume SSE or poll tasks. It never discovers tools, forwards ambient credentials, or falls back locally.
+The relay performs exactly one `tools/call` request with protocol metadata and framework-owned routing headers. It reads the terminal JSON-RPC reply from JSON or SSE, skipping streamed notifications, and does not poll tasks. It never discovers tools, forwards ambient credentials, or falls back locally.
 
 ## Packaging
 

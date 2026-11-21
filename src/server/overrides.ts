@@ -22,7 +22,7 @@ export interface ServeOverrides {
 
 /** Resolved HTTP listen and error options after merging schema + overrides. */
 export interface ResolvedHttpServeConfig {
-  targets: readonly [HttpListenTarget, ...HttpListenTarget[]];
+  targets: readonly HttpListenTarget[];
   trustProxy: boolean;
   obscureUnexpected: boolean;
   log: ResolvedLogConfig;
@@ -48,14 +48,39 @@ function resolveLogFile(logFile: string | undefined): string | undefined {
 export function resolveHttpServeConfig(program: AppSpec, overrides: ServeOverrides = {}): ResolvedHttpServeConfig {
   const http = program.http;
   const obscureUnexpected = overrides.obscureErrors ?? false;
+  const configured = program.server?.listeners;
+  const targets: HttpListenTarget[] = [];
+  if (configured === undefined) {
+    targets.push({ kind: "tcp", host: overrides.host ?? http?.host ?? "127.0.0.1", port: overrides.port ?? http?.port ?? 3000 });
+  } else {
+    const listeners = typeof configured === "function" ? configured() : configured;
+    if (listeners === null || typeof listeners !== "object" || Array.isArray(listeners)) {
+      throw new TypeError("server.listeners must be an object with tcp and/or socket settings");
+    }
+    if (Object.keys(listeners).some((key) => key !== "tcp" && key !== "socket")) {
+      throw new TypeError("server.listeners only accepts tcp and socket keys");
+    }
+    const { tcp, socket } = listeners;
+    if (tcp === undefined && socket === undefined) {
+      throw new TypeError("server.listeners requires at least one of tcp or socket");
+    }
+    if (tcp !== undefined) {
+      if (tcp === null || typeof tcp !== "object" || Array.isArray(tcp)) {
+        throw new TypeError("server.listeners.tcp must be an object");
+      }
+      targets.push({ kind: "tcp", host: overrides.host ?? tcp.host ?? "127.0.0.1", port: overrides.port ?? tcp.port ?? 3000 });
+    } else if (overrides.host !== undefined || overrides.port !== undefined) {
+      throw new TypeError("TCP overrides require server.listeners.tcp");
+    }
+    if (socket !== undefined) {
+      if (socket === null || typeof socket !== "object" || typeof socket.path !== "string") {
+        throw new TypeError("server.listeners.socket requires a path");
+      }
+      targets.push({ kind: "unix", path: socket.path });
+    }
+  }
   return {
-    targets: [
-      {
-        kind: "tcp",
-        host: overrides.host ?? http?.host ?? "127.0.0.1",
-        port: overrides.port ?? http?.port ?? 3000,
-      },
-    ],
+    targets,
     trustProxy: overrides.trustProxy ?? http?.trustProxy ?? false,
     obscureUnexpected,
     log: resolveLogConfig(program, {

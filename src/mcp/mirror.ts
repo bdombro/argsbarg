@@ -211,22 +211,89 @@ async function invokeRelay(
     );
   }
 
-  let value: unknown;
+  const isSse = response.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase() === "text/event-stream";
+  let decoded: McpResultResponse | McpErrorResponse | undefined;
   try {
-    value = await response.json();
+    decoded =
+      isSse && response.body !== null
+        ? await readRelayEventStream(response.body, context.signal)
+        : decodeMcpResponse(await response.json());
   } catch {
     return failure(
       "transport",
       context.signal.aborted ? "CALL_ABORTED" : "INVALID_MCP_RESPONSE",
-      context.signal.aborted ? "MCP relay was aborted" : "MCP relay returned malformed JSON",
+      context.signal.aborted
+        ? "MCP relay was aborted"
+        : isSse
+          ? "MCP relay returned a malformed event stream"
+          : "MCP relay returned malformed JSON",
     );
   }
   if (context.signal.aborted) return failure("transport", "CALL_ABORTED", "MCP relay was aborted");
-  const decoded = decodeMcpResponse(value);
   if (decoded === undefined) {
     return failure("transport", "INVALID_MCP_RESPONSE", "MCP relay returned an invalid protocol response");
   }
   return { kind: "native", value: decoded, stdout: "", stderr: "" };
+}
+
+/** Reads the terminal response without waiting for the server to close the stream. */
+async function readRelayEventStream(
+  /** Body of the single relay response. */
+  body: ReadableStream<Uint8Array>,
+  /** Cancellation of this CLI invocation. */
+  signal: AbortSignal,
+): Promise<McpResultResponse | McpErrorResponse | undefined> {
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let line = "";
+  let afterCr = false;
+  let data: string[] = [];
+  /** Stops reading without waiting for a remote stream to finish. */
+  const cancel = (): void => {
+    void reader.cancel().catch(() => {}); // The body may already be errored or closed.
+  };
+  signal.addEventListener("abort", cancel, { once: true });
+  try {
+    while (!signal.aborted) {
+      const { done, value } = await reader.read();
+      if (done || signal.aborted) return undefined;
+      const chunk = decoder.decode(value, { stream: true });
+      if (chunk.length === 0) continue;
+      let start = afterCr && chunk.startsWith("\n") ? 1 : 0;
+      afterCr = chunk.endsWith("\r");
+      for (const match of chunk.matchAll(/\r\n|\r|\n/g)) {
+        const index = match.index;
+        if (index < start) continue;
+        line += chunk.slice(start, index);
+        start = index + match[0].length;
+        if (line === "") {
+          if (data.length === 0) continue;
+          const value: unknown = JSON.parse(data.join("\n"));
+          data = [];
+          if (
+            isRecord(value) &&
+            value.jsonrpc === "2.0" &&
+            typeof value.method === "string" &&
+            !Object.hasOwn(value, "id") &&
+            !Object.hasOwn(value, "result") &&
+            !Object.hasOwn(value, "error")
+          ) {
+            continue;
+          }
+          return decodeMcpResponse(value);
+        }
+        if (line === "data") data.push("");
+        else if (line.startsWith("data:")) data.push(line.slice(line[5] === " " ? 6 : 5));
+        line = "";
+      }
+      line += chunk.slice(start);
+    }
+    return undefined;
+  } finally {
+    signal.removeEventListener("abort", cancel);
+    cancel();
+    reader.releaseLock();
+  }
 }
 
 /** Accepts only the complete 2026 tools/call result/error shape for request ID 1. */

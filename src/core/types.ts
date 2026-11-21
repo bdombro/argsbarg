@@ -420,6 +420,41 @@ export interface CliAppConfig<Seed extends object = Locals> {
 /** Exact browser origins to admit, or an explicit opt-out from Origin checking. */
 export type AllowedOrigins = readonly string[] | "*";
 
+/** Explicit non-empty set of endpoints that share the same HTTP mounts. */
+export type ServerListeners =
+  | {
+      /** Explicitly enables the TCP endpoint. */
+      readonly tcp: TcpListenerConfig;
+      /** Also enables a Unix-domain socket when supplied. */
+      readonly socket?: UnixSocketListenerConfig;
+    }
+  | {
+      /** A socket-only set has no TCP endpoint. */
+      readonly tcp?: never;
+      /** The required Unix-domain socket for this set. */
+      readonly socket: UnixSocketListenerConfig;
+    };
+
+/** Settings for the shared TCP endpoint. */
+export interface TcpListenerConfig {
+  /** Bind host, defaulting to `127.0.0.1`. */
+  readonly host?: string;
+  /** Bind port, defaulting to `3000`; `0` lets the OS assign a port. */
+  readonly port?: number;
+}
+
+/** Settings for the shared Unix-domain socket endpoint. */
+export interface UnixSocketListenerConfig {
+  /** Absolute socket path inside a private directory owned by the process user. */
+  readonly path: string;
+}
+
+/** App-owned settings used only when starting the shared HTTP listener. */
+export interface ServerConfig {
+  /** Overrides the default TCP-only set; a resolver runs once per HTTP start. */
+  readonly listeners?: ServerListeners | (() => ServerListeners);
+}
+
 /** Independent native REST registration exposed by the app factory. */
 export interface HttpAppConfig {
   /** Explicit REST routes consumed by one fixed catalog. */
@@ -505,6 +540,8 @@ export type AppSpecFields = {
   log?: LogConfig;
   /** Independently declared MCP 2026 tools and discovery inputs. */
   mcp?: McpAppConfig<Locals>;
+  /** Shared listener settings for REST, JSON-RPC, and MCP over HTTP. */
+  server?: ServerConfig;
   /** App version (printed by the `version` built-in and MCP serverInfo). */
   version: string;
 };

@@ -66,6 +66,10 @@ export type {
   McpAppConfig,
   McpBundleConfig,
   RunnableCommand,
+  ServerConfig,
+  ServerListeners,
+  TcpListenerConfig,
+  UnixSocketListenerConfig,
 } from "./core/types.ts";
 export {
   command,
